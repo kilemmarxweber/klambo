@@ -29,6 +29,8 @@ class SplitChatTarget {
     this.memberImages = const [],
     this.peerTelephone,
     this.peerPrenom,
+    this.peerNom,
+    this.peerPostnom,
     this.peerRoleLabel,
     this.peerBranches = const [],
     this.noReply = false,
@@ -45,6 +47,8 @@ class SplitChatTarget {
   final List<String> memberImages;
   final String? peerTelephone;
   final String? peerPrenom;
+  final String? peerNom;
+  final String? peerPostnom;
   final String? peerRoleLabel;
   final List<String> peerBranches;
   final bool noReply;

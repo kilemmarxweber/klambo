@@ -84,6 +84,7 @@ class _GroupProfileScreenState extends ConsumerState<GroupProfileScreen> {
           final name = displayPersonName(
             prenom: raw["prenom"]?.toString(),
             nom: raw["nom"]?.toString(),
+            postnom: raw["postnom"]?.toString(),
             name: raw["name"]?.toString(),
           );
           if (name.isEmpty) continue;

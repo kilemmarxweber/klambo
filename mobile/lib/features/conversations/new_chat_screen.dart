@@ -129,16 +129,20 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
             organizationId: orgId,
             conversationId: conversationId,
             title: () {
-              final nom = personNom(
+              final label = displayPersonName(
+                prenom: selected["prenom"]?.toString(),
                 nom: selected["nom"]?.toString(),
+                postnom: selected["postnom"]?.toString(),
                 name: selected["name"]?.toString(),
               );
-              return nom.isEmpty ? l10n.conversationFallback : nom;
+              return label.isEmpty ? l10n.conversationFallback : label;
             }(),
             peerUserId: userId,
             peerImage: selected["image"]?.toString(),
             peerTelephone: extractPhoneNumber(selected),
             peerPrenom: selected["prenom"]?.toString(),
+            peerNom: selected["nom"]?.toString(),
+            peerPostnom: selected["postnom"]?.toString(),
             peerRoleLabel: selected["roleLabel"]?.toString(),
           ),
         ),

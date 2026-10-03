@@ -112,6 +112,8 @@ class ChatScreen extends ConsumerStatefulWidget {
     this.memberImages = const [],
     this.peerTelephone,
     this.peerPrenom,
+    this.peerNom,
+    this.peerPostnom,
     this.peerRoleLabel,
     this.peerBranches = const [],
     this.noReply = false,
@@ -129,6 +131,8 @@ class ChatScreen extends ConsumerStatefulWidget {
   final List<String> memberImages;
   final String? peerTelephone;
   final String? peerPrenom;
+  final String? peerNom;
+  final String? peerPostnom;
   final String? peerRoleLabel;
   final List<String> peerBranches;
   /// Bot notifications école — pas de champ de saisie / réponse.
@@ -195,6 +199,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (_isGroup || _isNoReplyConversation) return widget.title;
     final label = displayPersonName(
       prenom: widget.peerPrenom,
+      nom: widget.peerNom,
+      postnom: widget.peerPostnom,
       name: widget.title,
     );
     return label.isEmpty ? widget.title : label;
@@ -212,6 +218,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       nom: msg["senderNom"]?.toString() ??
           nested?["nom"]?.toString() ??
           nested?["lastName"]?.toString(),
+      postnom: msg["senderPostnom"]?.toString() ??
+          nested?["postnom"]?.toString(),
       name: msg["senderName"]?.toString() ?? nested?["name"]?.toString(),
     );
     if (label.isNotEmpty) return label;
@@ -274,6 +282,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       memberImages: widget.memberImages,
       peerTelephone: widget.peerTelephone,
       peerPrenom: widget.peerPrenom,
+      peerNom: widget.peerNom,
+      peerPostnom: widget.peerPostnom,
       peerRoleLabel: widget.peerRoleLabel,
       peerBranches: widget.peerBranches,
       noReply: widget.noReply,

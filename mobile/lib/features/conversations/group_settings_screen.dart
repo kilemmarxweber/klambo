@@ -189,15 +189,15 @@ class _GroupSettingsScreenState extends ConsumerState<GroupSettingsScreen> {
                           final label = displayPersonName(
                             prenom: m["prenom"]?.toString(),
                             nom: m["nom"]?.toString(),
+                            postnom: m["postnom"]?.toString(),
                             name: m["name"]?.toString(),
                           );
                           Navigator.of(context).push(
                             AppPageRoute(
                               builder: (_) => ContactProfileScreen(
-                                name: (m["name"]?.toString().trim().isNotEmpty ??
-                                        false)
-                                    ? m["name"].toString()
-                                    : label,
+                                name: label.isNotEmpty
+                                    ? label
+                                    : (m["name"]?.toString() ?? "Membre"),
                                 prenom: m["prenom"]?.toString(),
                                 image: m["image"]?.toString(),
                                 telephone: accountTelephone(m) ??
@@ -214,6 +214,7 @@ class _GroupSettingsScreenState extends ConsumerState<GroupSettingsScreen> {
                           name: displayPersonName(
                             prenom: m["prenom"]?.toString(),
                             nom: m["nom"]?.toString(),
+                            postnom: m["postnom"]?.toString(),
                             name: m["name"]?.toString(),
                           ),
                           radius: 22,
@@ -222,6 +223,7 @@ class _GroupSettingsScreenState extends ConsumerState<GroupSettingsScreen> {
                           displayPersonName(
                             prenom: m["prenom"]?.toString(),
                             nom: m["nom"]?.toString(),
+                            postnom: m["postnom"]?.toString(),
                             name: m["name"]?.toString(),
                           ),
                         ),

@@ -1,26 +1,42 @@
-/// Prénom et nom restent séparés : aucune concaténation avec le postnom.
+/// Prénom et nom restent séparés : le postnom n'est pas affiché.
 String personPrenom(String? prenom) => prenom?.trim() ?? "";
 
-String personNom({String? nom, String? name}) {
-  final family = nom?.trim() ?? "";
-  if (family.isNotEmpty) return family;
-  return name?.trim() ?? "";
+String _withoutLeading(String value, String token) {
+  final piece = token.trim();
+  var rest = value.trim();
+  if (piece.isEmpty || rest.isEmpty) return rest;
+  final prefix = "${piece.toLowerCase()} ";
+  while (rest.toLowerCase().startsWith(prefix)) {
+    rest = rest.substring(piece.length).trim();
+  }
+  if (rest.toLowerCase() == piece.toLowerCase()) return "";
+  return rest;
 }
 
-/// Affiche prénom + nom, sans postnom. Si [name] contient déjà le prénom, il n’est pas répété.
+/// Un seul des deux : [nom] s'il est rempli, sinon [name]. Jamais les deux.
+String personNom({
+  String? nom,
+  String? name,
+  String? prenom,
+  String? postnom,
+}) {
+  final family = (nom?.trim().isNotEmpty ?? false)
+      ? nom!.trim()
+      : (name?.trim() ?? "");
+  return _withoutLeading(family, personPrenom(prenom));
+}
+
+/// Affiche le prénom plus un seul nom, sans postnom et sans répétition.
 String displayPersonName({
   String? prenom,
   String? nom,
   String? name,
+  String? postnom,
 }) {
   final p = personPrenom(prenom);
-  final n = personNom(nom: nom, name: name);
+  final n = personNom(nom: nom, name: name, prenom: p);
   if (p.isEmpty) return n;
   if (n.isEmpty) return p;
-  if (n.toLowerCase().startsWith("${p.toLowerCase()} ") ||
-      n.toLowerCase() == p.toLowerCase()) {
-    return n;
-  }
   return "$p $n";
 }
 

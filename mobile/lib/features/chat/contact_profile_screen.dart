@@ -46,7 +46,10 @@ class _ContactProfileScreenState extends ConsumerState<ContactProfileScreen> {
 
   String get _prenomLabel => personPrenom(widget.prenom);
 
-  String get _nomLabel => personNom(name: widget.name);
+  String get _nomLabel => personNom(
+        name: widget.name,
+        prenom: widget.prenom,
+      );
 
   @override
   void initState() {

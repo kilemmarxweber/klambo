@@ -101,6 +101,8 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
       memberImages: target.memberImages,
       peerTelephone: target.peerTelephone,
       peerPrenom: target.peerPrenom,
+      peerNom: target.peerNom,
+      peerPostnom: target.peerPostnom,
       peerRoleLabel: target.peerRoleLabel,
       peerBranches: target.peerBranches,
       noReply: target.noReply,
@@ -580,6 +582,8 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
       memberImages: isGroup ? _groupPhotoSources(item, myId) : const [],
       peerTelephone: isGroup ? null : extractPhoneNumber(peer),
       peerPrenom: isGroup ? null : peer?["prenom"]?.toString(),
+      peerNom: isGroup ? null : peer?["nom"]?.toString(),
+      peerPostnom: isGroup ? null : peer?["postnom"]?.toString(),
       peerRoleLabel: isGroup ? null : peer?["roleLabel"]?.toString(),
       peerBranches: isGroup ? const [] : _peerBranches(peer),
       noReply: item["noReply"] == true ||
@@ -1035,6 +1039,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                                         final label = displayPersonName(
                                           prenom: peer?["prenom"]?.toString(),
                                           nom: peer?["nom"]?.toString(),
+                                          postnom: peer?["postnom"]?.toString(),
                                           name: peer?["name"]?.toString() ??
                                               rawTitle,
                                         );

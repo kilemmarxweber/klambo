@@ -186,9 +186,11 @@ class AlertConnectionService : Service() {
             return
         }
         // L'écran ouvert gère lui-même messages et appels.
+        // Hors premier plan : toujours notifier (même si le heartbeat Flutter
+        // est encore récent après un passage en arrière-plan).
         if (AppVisibility.inForeground && flutterStillAlive()) return
         when {
-            type == "message.created" && !flutterStillAlive() -> showMessage(event, me)
+            type == "message.created" -> showMessage(event, me)
             type == "call.offer" && event.optString("toUserId") == me -> showCall(event)
         }
     }
