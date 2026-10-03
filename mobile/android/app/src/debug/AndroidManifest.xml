@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Cleartext autorisé uniquement en debug (émulateur / LAN). -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>

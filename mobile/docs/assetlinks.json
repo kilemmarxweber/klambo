@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.klambocore.klambo",
+      "sha256_cert_fingerprints": [
+        "B7D88D0A614A97BD5F943D7CD7D4424C7A70A4DBE45406B0E5B32AE7334D44C0"
+      ]
+    }
+  }
+]

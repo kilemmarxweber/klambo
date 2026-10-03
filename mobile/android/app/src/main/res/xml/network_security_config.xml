@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Production : HTTPS uniquement (réduit les alertes Play Protect / sideload). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <!-- Domaine officiel Klambocore -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">klambocore.com</domain>
+    </domain-config>
+</network-security-config>

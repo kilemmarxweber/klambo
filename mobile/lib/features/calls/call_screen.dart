@@ -1,0 +1,283 @@
+import "dart:async";
+
+import "package:flutter/material.dart";
+import "package:flutter_riverpod/flutter_riverpod.dart";
+import "package:flutter_webrtc/flutter_webrtc.dart";
+import "package:klambo_messagerie/core/l10n.dart";
+import "package:klambo_messagerie/features/calls/call_controller.dart";
+
+class CallScreen extends ConsumerStatefulWidget {
+  const CallScreen({super.key, required this.controller});
+
+  final CallController controller;
+
+  @override
+  ConsumerState<CallScreen> createState() => _CallScreenState();
+}
+
+class _CallScreenState extends ConsumerState<CallScreen> {
+  late final CallController _c;
+  bool _actionBusy = false;
+  bool _popScheduled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _c = widget.controller;
+    _c.addListener(_onUpdate);
+  }
+
+  void _onUpdate() {
+    if (!mounted || _c.isDisposed) return;
+    if (_c.phase == CallPhase.idle) {
+      _schedulePop();
+      return;
+    }
+    setState(() {});
+  }
+
+  void _schedulePop() {
+    if (_popScheduled || !mounted) return;
+    _popScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Navigator.of(context).maybePop();
+    });
+  }
+
+  Future<void> _safeAction(Future<void> Function() action) async {
+    if (_actionBusy || _c.isDisposed) return;
+    setState(() => _actionBusy = true);
+    try {
+      await action();
+    } catch (e) {
+      debugPrint("[call] action failed: $e");
+    } finally {
+      if (mounted) setState(() => _actionBusy = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    if (!_c.isDisposed) {
+      _c.removeListener(_onUpdate);
+    }
+    super.dispose();
+  }
+
+  String _statusLabel(L10n l10n) {
+    final hint = _c.error?.trim();
+    if (hint != null &&
+        hint.isNotEmpty &&
+        (_c.phase == CallPhase.ringingOut ||
+            _c.phase == CallPhase.ended ||
+            _c.phase == CallPhase.idle)) {
+      return hint;
+    }
+    switch (_c.phase) {
+      case CallPhase.ringingOut:
+        return l10n.callRingingOut;
+      case CallPhase.ringingIn:
+        return l10n.callRingingIn;
+      case CallPhase.connecting:
+        return l10n.callConnecting;
+      case CallPhase.active:
+        return _c.active?.kind == "VIDEO"
+            ? l10n.callVideoActive
+            : l10n.callAudioActive;
+      case CallPhase.ended:
+        return l10n.callEnded;
+      case CallPhase.idle:
+        return "";
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = ref.watch(l10nProvider);
+    if (_c.isDisposed) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF0B1F17),
+        body: SizedBox.shrink(),
+      );
+    }
+    final isVideo = _c.active?.kind == "VIDEO";
+    final name = _c.active?.peerName ?? l10n.callPeerFallback;
+
+    return PopScope(
+      canPop: _c.phase == CallPhase.idle || _c.phase == CallPhase.ended,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        await _safeAction(() => _c.hangup());
+        if (mounted) _schedulePop();
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0B1F17),
+        body: SafeArea(
+          child: Stack(
+            children: [
+              if (isVideo && _c.phase == CallPhase.active)
+                Positioned.fill(
+                  child: RTCVideoView(
+                    _c.remoteRenderer,
+                    objectFit:
+                        RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                  ),
+                )
+              else
+                Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircleAvatar(
+                        radius: 48,
+                        backgroundColor: const Color(0xFF0B6E4F),
+                        child: Text(
+                          name.isNotEmpty ? name[0].toUpperCase() : "?",
+                          style: const TextStyle(
+                            fontSize: 36,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        name,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 22,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _statusLabel(l10n),
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.7),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              if (isVideo &&
+                  (_c.phase == CallPhase.active ||
+                      _c.phase == CallPhase.connecting))
+                Positioned(
+                  right: 16,
+                  top: 16,
+                  width: 110,
+                  height: 160,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: RTCVideoView(
+                      _c.localRenderer,
+                      mirror: true,
+                      objectFit:
+                          RTCVideoViewObjectFit.RTCVideoViewObjectFitCover,
+                    ),
+                  ),
+                ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 32,
+                child: _c.phase == CallPhase.ringingIn
+                    ? _incomingActions(l10n)
+                    : _inCallActions(l10n),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _incomingActions(L10n l10n) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        _roundBtn(
+          color: Colors.red,
+          icon: Icons.call_end,
+          label: l10n.callReject,
+          onTap: _actionBusy
+              ? null
+              : () => _safeAction(() => _c.rejectIncoming()),
+        ),
+        _roundBtn(
+          color: const Color(0xFF0B6E4F),
+          icon: Icons.call,
+          label: l10n.callAccept,
+          onTap: _actionBusy
+              ? null
+              : () => _safeAction(() => _c.acceptIncoming()),
+        ),
+      ],
+    );
+  }
+
+  Widget _inCallActions(L10n l10n) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: [
+        _roundBtn(
+          color: Colors.white24,
+          icon: _c.micMuted ? Icons.mic_off : Icons.mic,
+          label: _c.micMuted ? l10n.callMute : l10n.callMic,
+          onTap: _actionBusy ? null : () => _safeAction(() => _c.toggleMute()),
+        ),
+        if (_c.active?.kind == "VIDEO")
+          _roundBtn(
+            color: Colors.white24,
+            icon: _c.camOff ? Icons.videocam_off : Icons.videocam,
+            label: l10n.callCamera,
+            onTap: _actionBusy
+                ? null
+                : () => _safeAction(() => _c.toggleCamera()),
+          ),
+        _roundBtn(
+          color: Colors.red,
+          icon: Icons.call_end,
+          label: l10n.callHangup,
+          onTap: _actionBusy ? null : () => _safeAction(() => _c.hangup()),
+        ),
+      ],
+    );
+  }
+
+  Widget _roundBtn({
+    required Color color,
+    required IconData icon,
+    required String label,
+    required VoidCallback? onTap,
+  }) {
+    return Column(
+      children: [
+        InkWell(
+          onTap: onTap,
+          customBorder: const CircleBorder(),
+          child: CircleAvatar(
+            radius: 28,
+            backgroundColor: color,
+            child: _actionBusy &&
+                    (icon == Icons.call_end || icon == Icons.call)
+                ? const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : Icon(icon, color: Colors.white),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          label,
+          style: const TextStyle(color: Colors.white70, fontSize: 12),
+        ),
+      ],
+    );
+  }
+}

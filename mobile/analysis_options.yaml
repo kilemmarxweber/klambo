@@ -1,0 +1,21 @@
+analyzer:
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
+include: package:flutter_lints/flutter.yaml
+
+# Règles Dart / Flutter activables (décommenter au besoin).
+linter:
+  rules:
+    prefer_const_constructors: true
+    prefer_const_literals_to_create_immutables: true
+    use_full_hex_values_for_flutter_colors: true
+    avoid_print: false
+    # prefer_single_quotes: true
+    # always_declare_return_types: true
+    # unawaited_futures: true

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Klambo</string>
+    <string name="publisher_name">Klambocore SARL</string>
+    <string name="publisher_website">https://klambocore.com</string>
+    <string name="publisher_support">support@klambocore.com</string>
+    <string name="app_description">Messagerie sécurisée Klambo par Klambocore SARL</string>
+</resources>
