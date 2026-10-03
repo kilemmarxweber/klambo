@@ -12,6 +12,7 @@ import "package:klambo_messagerie/core/sound_service.dart";
 import "package:klambo_messagerie/core/theme_prefs.dart";
 import "package:klambo_messagerie/core/wallpaper_prefs.dart";
 import "package:klambo_messagerie/widgets/chat_wallpaper.dart";
+import "package:klambo_messagerie/features/auth/phone_login_screen.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
 import "package:permission_handler/permission_handler.dart";
 
@@ -57,12 +58,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
+  Future<void> _changeContact() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const PhoneLoginScreen(changeContact: true),
+      ),
+    );
+  }
+
   Future<void> _confirmLogout() async {
     final l10n = ref.read(l10nProvider);
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(l10n.logout),
+        title: Text(l10n.logoutApp),
         content: Text(l10n.logoutConfirm),
         actions: [
           TextButton(
@@ -71,14 +80,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: Text(l10n.logout),
+            child: Text(l10n.logoutApp),
           ),
         ],
       ),
     );
     if (ok != true || !mounted) return;
     unawaited(NotificationService.instance.clearBadge());
-    await ref.read(sessionProvider.notifier).signOut(exitAppAfter: true);
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    await ref.read(sessionProvider.notifier).signOut();
   }
 
   @override
@@ -173,6 +183,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           child: _WallpaperChoice(
                             style: style,
                             label: switch (style) {
+                              WallpaperStyle.plain => l10n.wallpaperPlain,
                               WallpaperStyle.messages => l10n.wallpaperMessages,
                               WallpaperStyle.android => l10n.wallpaperAndroid,
                               WallpaperStyle.mix => l10n.wallpaperMix,
@@ -281,9 +292,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
                 const Divider(height: 1),
                 ListTile(
+                  leading: Icon(Icons.sim_card_outlined, color: scheme.primary),
+                  title: Text(l10n.changeContact),
+                  subtitle: Text(l10n.changeContactHint),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _changeContact,
+                ),
+                const Divider(height: 1),
+                ListTile(
                   leading: Icon(Icons.logout, color: Colors.red.shade700),
                   title: Text(
-                    l10n.logout,
+                    l10n.logoutApp,
                     style: TextStyle(color: Colors.red.shade700),
                   ),
                   onTap: _confirmLogout,

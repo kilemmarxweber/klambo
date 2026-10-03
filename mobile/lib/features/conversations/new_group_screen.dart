@@ -2,8 +2,9 @@ import "package:flutter/material.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:klambo_messagerie/core/app_theme.dart";
 import "package:klambo_messagerie/core/person_name.dart";
+import "package:klambo_messagerie/core/phone_number.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
-import "package:klambo_messagerie/features/chat/chat_screen.dart";
+import "package:klambo_messagerie/features/chat/split_chat.dart";
 import "package:klambo_messagerie/widgets/chat_composer.dart";
 import "package:klambo_messagerie/widgets/eteyelo_messaging_app_bar.dart";
 import "package:klambo_messagerie/widgets/user_avatar.dart";
@@ -139,23 +140,20 @@ class _NewGroupScreenState extends ConsumerState<NewGroupScreen> {
       }
 
       if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => ChatScreen(
-            organizationId: orgId,
-            conversationId: conversationId,
-            title: subject,
-            memberImages: [
-              for (final member in _selected.values)
-                if (member["image"]?.toString().trim().isNotEmpty == true)
-                  member["image"].toString(),
-            ],
-            conversationType: "GROUP",
-            myRole: "ADMIN",
-            repliesLocked: false,
-          ),
-        ),
+      ref.read(splitChatProvider.notifier).state = SplitChatTarget(
+        organizationId: orgId,
+        conversationId: conversationId,
+        title: subject,
+        memberImages: [
+          for (final member in _selected.values)
+            if (member["image"]?.toString().trim().isNotEmpty == true)
+              member["image"].toString(),
+        ],
+        conversationType: "GROUP",
+        myRole: "ADMIN",
+        repliesLocked: false,
       );
+      Navigator.of(context).pop();
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
@@ -240,10 +238,12 @@ class _NewGroupScreenState extends ConsumerState<NewGroupScreen> {
                     final id = r["userId"]?.toString() ?? "";
                     final selected = _selected.containsKey(id);
                     final label = displayPersonName(
-                      prenom: r["prenom"]?.toString(),
-                      nom: r["nom"]?.toString(),
-                      name: r["name"]?.toString(),
+                      prenom: textWithoutPhone(r["prenom"]?.toString()),
+                      nom: textWithoutPhone(r["nom"]?.toString()),
+                      name: textWithoutPhone(r["name"]?.toString()),
                     );
+                    final phone =
+                        accountTelephone(r) ?? extractPhoneNumber(r);
                     final shown = label.isEmpty ? "Contact" : label;
                     return ListTile(
                       selected: selected,
@@ -259,6 +259,9 @@ class _NewGroupScreenState extends ConsumerState<NewGroupScreen> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
+                      subtitle: (phone == null || phone.isEmpty)
+                          ? null
+                          : Text(phone),
                       trailing: Icon(
                         selected
                             ? Icons.check_circle

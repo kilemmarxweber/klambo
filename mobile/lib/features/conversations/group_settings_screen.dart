@@ -1,6 +1,10 @@
 import "package:flutter/material.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
+import "package:klambo_messagerie/core/app_page_route.dart";
+import "package:klambo_messagerie/core/person_name.dart";
+import "package:klambo_messagerie/core/phone_number.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
+import "package:klambo_messagerie/features/chat/contact_profile_screen.dart";
 import "package:klambo_messagerie/widgets/eteyelo_messaging_app_bar.dart";
 import "package:klambo_messagerie/widgets/user_avatar.dart";
 
@@ -181,12 +185,46 @@ class _GroupSettingsScreenState extends ConsumerState<GroupSettingsScreen> {
                     for (final m in members) ...[
                       ListTile(
                         contentPadding: EdgeInsets.zero,
+                        onTap: () {
+                          final label = displayPersonName(
+                            prenom: m["prenom"]?.toString(),
+                            nom: m["nom"]?.toString(),
+                            name: m["name"]?.toString(),
+                          );
+                          Navigator.of(context).push(
+                            AppPageRoute(
+                              builder: (_) => ContactProfileScreen(
+                                name: (m["name"]?.toString().trim().isNotEmpty ??
+                                        false)
+                                    ? m["name"].toString()
+                                    : label,
+                                prenom: m["prenom"]?.toString(),
+                                image: m["image"]?.toString(),
+                                telephone: accountTelephone(m) ??
+                                    extractPhoneNumber(m),
+                                roleLabel: m["roleLabel"]?.toString(),
+                                userId: m["userId"]?.toString(),
+                                organizationId: widget.organizationId,
+                              ),
+                            ),
+                          );
+                        },
                         leading: UserAvatar(
                           image: m["image"]?.toString(),
-                          name: m["name"]?.toString() ?? "?",
+                          name: displayPersonName(
+                            prenom: m["prenom"]?.toString(),
+                            nom: m["nom"]?.toString(),
+                            name: m["name"]?.toString(),
+                          ),
                           radius: 22,
                         ),
-                        title: Text(m["name"]?.toString() ?? ""),
+                        title: Text(
+                          displayPersonName(
+                            prenom: m["prenom"]?.toString(),
+                            nom: m["nom"]?.toString(),
+                            name: m["name"]?.toString(),
+                          ),
+                        ),
                         subtitle: Text(
                           [
                             if (m["groupRole"] == "ADMIN") "Admin",

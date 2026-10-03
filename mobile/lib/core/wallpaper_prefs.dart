@@ -1,8 +1,9 @@
 import "package:flutter/material.dart";
 import "package:shared_preferences/shared_preferences.dart";
 
-/// Les trois fonds générés pour les discussions.
+/// Fonds de discussion : uni d’origine, ou motifs d’emojis.
 enum WallpaperStyle {
+  plain,
   messages,
   android,
   mix,
@@ -14,7 +15,7 @@ class WallpaperPrefs extends ChangeNotifier {
 
   static const _key = "klambo_wallpaper_style";
 
-  WallpaperStyle style = WallpaperStyle.messages;
+  WallpaperStyle style = WallpaperStyle.plain;
 
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -34,6 +35,6 @@ class WallpaperPrefs extends ChangeNotifier {
     for (final style in WallpaperStyle.values) {
       if (style.name == raw) return style;
     }
-    return WallpaperStyle.messages;
+    return WallpaperStyle.plain;
   }
 }

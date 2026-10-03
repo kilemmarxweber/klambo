@@ -134,6 +134,11 @@ class L10n {
         "No conversations yet",
         "Ainda sem conversas",
       );
+  String get selectConversation => _t(
+        "Sélectionnez une conversation",
+        "Select a conversation",
+        "Selecione uma conversa",
+      );
   String get noResults =>
       _t("Aucun résultat", "No results", "Sem resultados");
   String get writeMessage =>
@@ -145,6 +150,27 @@ class L10n {
       );
   String get refresh => _t("Actualiser", "Refresh", "Atualizar");
   String get logout => _t("Déconnexion", "Sign out", "Terminar sessão");
+  String get logoutApp => _t("Logout", "Logout", "Logout");
+  String get changeContact => _t(
+        "Changer le contact",
+        "Change contact",
+        "Mudar o contacto",
+      );
+  String get changeContactHint => _t(
+        "L’ancien numéro reste connecté tant qu’il n’est pas remplacé.",
+        "The current number stays signed in until it is replaced.",
+        "O número atual permanece ligado até ser substituído.",
+      );
+  String get changeContactSame => _t(
+        "Ce numéro est déjà connecté.",
+        "This number is already signed in.",
+        "Este número já está ligado.",
+      );
+  String get changeContactCurrent => _t(
+        "Numéro actuel",
+        "Current number",
+        "Número atual",
+      );
   String get myAccount => _t("Mon compte", "My account", "A minha conta");
   String get profile => _t("Profil", "Profile", "Perfil");
   String get newMessage =>
@@ -185,10 +211,12 @@ class L10n {
   String get wallpaperTitle =>
       _t("Fond d’écran", "Wallpaper", "Fundo");
   String get wallpaperHint => _t(
-        "Motif derrière les conversations",
-        "Pattern behind conversations",
-        "Padrão atrás das conversas",
+        "Motif simple derrière les messages",
+        "Simple pattern behind messages",
+        "Padrão simples atrás das mensagens",
       );
+  String get wallpaperPlain =>
+      _t("Uni", "Plain", "Liso");
   String get wallpaperMessages =>
       _t("Messages", "Messages", "Mensagens");
   String get wallpaperAndroid =>

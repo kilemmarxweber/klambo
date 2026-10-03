@@ -10,6 +10,7 @@ import "package:klambo_messagerie/core/config.dart";
 import "package:klambo_messagerie/core/l10n.dart";
 import "package:klambo_messagerie/core/notification_service.dart";
 import "package:klambo_messagerie/core/theme_prefs.dart";
+import "package:klambo_messagerie/core/wallpaper_prefs.dart";
 import "package:klambo_messagerie/features/auth/phone_login_screen.dart";
 import "package:klambo_messagerie/features/auth/profile_onboarding_screen.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
@@ -28,6 +29,7 @@ Future<void> main() async {
       LocaleController.instance.loadPersisted(),
       AlertPrefs.instance.load(),
       ThemePrefs.instance.load(),
+      WallpaperPrefs.instance.load(),
     ]);
   } catch (e, st) {
     debugPrint("[boot] prefs failed: $e\n$st");

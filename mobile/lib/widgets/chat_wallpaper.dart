@@ -1,7 +1,8 @@
 import "package:flutter/material.dart";
+import "package:klambo_messagerie/core/app_theme.dart";
 import "package:klambo_messagerie/core/wallpaper_prefs.dart";
 
-/// Fond de discussion généré : emojis téléphone, Android, enveloppes, etc.
+/// Fond de discussion : une seule couleur, emojis en filigrane de la même teinte.
 class ChatWallpaper extends StatelessWidget {
   const ChatWallpaper({super.key, this.style});
 
@@ -16,13 +17,20 @@ class ChatWallpaper extends StatelessWidget {
 
   static Color baseOf(WallpaperStyle style, {required bool dark}) {
     return switch (style) {
-      WallpaperStyle.messages =>
-        dark ? const Color(0xFF102033) : const Color(0xFFE7F2FC),
-      WallpaperStyle.android =>
-        dark ? const Color(0xFF102018) : const Color(0xFFE6F6EE),
+      WallpaperStyle.plain ||
+      WallpaperStyle.messages ||
+      WallpaperStyle.android ||
       WallpaperStyle.mix =>
-        dark ? const Color(0xFF24180F) : const Color(0xFFFFF3E6),
+        dark ? EteyeloColors.chatBackgroundDark : EteyeloColors.chatBackground,
     };
+  }
+
+  /// Encre du filigrane : même teinte que le fond, un cran plus marquée.
+  static Color watermarkOf(WallpaperStyle style, {required bool dark}) {
+    if (style == WallpaperStyle.plain) return const Color(0x00000000);
+    final base = baseOf(style, dark: dark);
+    final ink = dark ? Colors.white : const Color(0xFF6B6258);
+    return Color.alphaBlend(ink.withValues(alpha: dark ? 0.20 : 0.28), base);
   }
 
   @override
@@ -38,86 +46,97 @@ class ChatWallpaper extends StatelessWidget {
 
   Widget _paint(BuildContext context, WallpaperStyle value) {
     final dark = Theme.of(context).brightness == Brightness.dark;
-    return CustomPaint(
-      painter: _EmojiWallpaperPainter(style: value, dark: dark),
-      child: const SizedBox.expand(),
+    final base = baseOf(value, dark: dark);
+    if (value == WallpaperStyle.plain) {
+      return ColoredBox(color: base, child: const SizedBox.expand());
+    }
+    final ink = watermarkOf(value, dark: dark);
+    return ColoredBox(
+      color: base,
+      child: IgnorePointer(
+        child: ColorFiltered(
+          colorFilter: ColorFilter.mode(ink, BlendMode.srcIn),
+          child: _EmojiField(style: value),
+        ),
+      ),
     );
   }
 }
 
-class _Spot {
-  const _Spot(this.emoji, this.dx, this.dy, this.size);
-  final String emoji;
-  final double dx;
-  final double dy;
-  final double size;
-}
-
-class _EmojiWallpaperPainter extends CustomPainter {
-  _EmojiWallpaperPainter({required this.style, required this.dark});
+class _EmojiField extends StatelessWidget {
+  const _EmojiField({required this.style});
 
   final WallpaperStyle style;
-  final bool dark;
 
-  static const _tile = 180.0;
+  static const _size = 18.0;
+  static const _step = 46.0;
+  static const _fonts = [
+    "Segoe UI Emoji",
+    "Apple Color Emoji",
+    "Noto Color Emoji",
+    "Noto Emoji",
+  ];
 
-  List<_Spot> get _spots => switch (style) {
-        WallpaperStyle.messages => const [
-            _Spot("✉️", 10, 14, 26),
-            _Spot("📱", 78, 22, 28),
-            _Spot("💬", 138, 8, 22),
-            _Spot("📞", 28, 96, 24),
-            _Spot("💌", 108, 108, 26),
-            _Spot("📲", 148, 72, 18),
-          ],
-        WallpaperStyle.android => const [
-            _Spot("🤖", 12, 12, 30),
-            _Spot("📱", 92, 18, 24),
-            _Spot("💚", 142, 78, 20),
-            _Spot("🔔", 36, 104, 22),
-            _Spot("✉️", 112, 112, 24),
-            _Spot("🕹️", 150, 28, 18),
-          ],
-        WallpaperStyle.mix => const [
-            _Spot("📱", 8, 12, 24),
-            _Spot("🤖", 72, 6, 26),
-            _Spot("✉️", 132, 22, 22),
-            _Spot("💬", 18, 96, 22),
-            _Spot("📷", 78, 104, 22),
-            _Spot("✨", 138, 92, 18),
-            _Spot("💙", 156, 48, 16),
-            _Spot("📎", 48, 52, 16),
-          ],
+  static const _messages = [
+    "💬", "✉️", "📱", "📞", "💌", "📲", "💭", "📧",
+    "🗨️", "☎️", "📩", "📨", "📝", "💜", "💙", "📎",
+  ];
+
+  static const _android = [
+    "🤖", "📱", "💚", "🔔", "🕹️", "⚙️", "📲", "💻",
+    "🔋", "📡", "🟢", "📳", "🔌", "📟", "🖱️", "🤖",
+  ];
+
+  static const _mix = [
+    "💬", "🤖", "✉️", "📷", "✨", "💙", "📎", "⭐",
+    "📱", "🎉", "❤️", "😂", "👍", "🌈", "🔥", "☕",
+    "🌙", "🌸", "🎯", "🎵", "📍", "🌟", "📞", "💚",
+  ];
+
+  List<String> get _emojis => switch (style) {
+        WallpaperStyle.plain => const [],
+        WallpaperStyle.messages => _messages,
+        WallpaperStyle.android => _android,
+        WallpaperStyle.mix => _mix,
       };
 
   @override
-  void paint(Canvas canvas, Size size) {
-    final base = ChatWallpaper.baseOf(style, dark: dark);
-    canvas.drawRect(Offset.zero & size, Paint()..color = base);
-
-    canvas.saveLayer(
-      Offset.zero & size,
-      Paint()..color = Color.fromARGB(dark ? 150 : 170, 255, 255, 255),
-    );
-    for (var y = -8.0; y < size.height + _tile; y += _tile) {
-      for (var x = -12.0; x < size.width + _tile; x += _tile) {
-        for (final spot in _spots) {
-          final painter = TextPainter(
-            text: TextSpan(
-              text: spot.emoji,
-              style: TextStyle(fontSize: spot.size, height: 1),
-            ),
-            textDirection: TextDirection.ltr,
-          )..layout();
-          painter.paint(canvas, Offset(x + spot.dx, y + spot.dy));
+  Widget build(BuildContext context) {
+    final emojis = _emojis;
+    if (emojis.isEmpty) return const SizedBox.expand();
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final height = constraints.maxHeight;
+        if (!width.isFinite || !height.isFinite || width <= 0 || height <= 0) {
+          return const SizedBox.expand();
         }
-      }
-    }
-    canvas.restore();
-  }
-
-  @override
-  bool shouldRepaint(covariant _EmojiWallpaperPainter oldDelegate) {
-    return oldDelegate.style != style || oldDelegate.dark != dark;
+        final children = <Widget>[];
+        var index = 0;
+        var row = 0;
+        for (var y = 0.0; y < height; y += _step) {
+          final shift = row.isOdd ? _step / 2 : 0.0;
+          for (var x = -_step / 2; x < width; x += _step) {
+            children.add(
+              Positioned(
+                left: x + shift,
+                top: y,
+                child: Text(
+                  emojis[index % emojis.length],
+                  style: const TextStyle(
+                    fontSize: _size,
+                    height: 1,
+                    fontFamilyFallback: _fonts,
+                  ),
+                ),
+              ),
+            );
+            index++;
+          }
+          row++;
+        }
+        return Stack(clipBehavior: Clip.hardEdge, children: children);
+      },
+    );
   }
 }

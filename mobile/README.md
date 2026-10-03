@@ -32,19 +32,49 @@ Confiance / sideload : voir `docs/INSTALL_TRUST.md` (éditeur, SHA-256, assetlin
 Minify R8 + `abiFilters arm64-v8a` sont activés en release (`android/app/build.gradle.kts`).
 Le poids restant vient surtout de WebRTC (appels).
 
-## Build iOS (macOS + Xcode uniquement)
+## Build iOS (GitHub Actions — Mac cloud)
 
-Impossible depuis Windows. Sur un Mac :
+Impossible de compiler un IPA depuis Windows en local. Utiliser le workflow
+[`.github/workflows/build-ios.yml`](../.github/workflows/build-ios.yml) (runner `macos-latest`).
 
-```bash
-cd mobile
-flutter pub get
-cd ios && pod install && cd ..
-flutter build ipa --release
-# IPA : build/ios/ipa/*.ipa — renommer en klambo.ipa
+Guide signature détaillé : [`ios/ci/README-signing.md`](ios/ci/README-signing.md).
+
+### Les 5 secrets GitHub à ajouter
+
+Repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret** :
+
+| # | Nom du secret | Valeur |
+|---|---------------|--------|
+| 1 | `BUILD_CERTIFICATE_BASE64` | Contenu base64 du certificat Distribution `.p12` |
+| 2 | `P12_PASSWORD` | Mot de passe choisi à l’export du `.p12` |
+| 3 | `PROVISIONING_PROFILE_BASE64` | Contenu base64 du profil Ad Hoc `.mobileprovision` |
+| 4 | `KEYCHAIN_PASSWORD` | Mot de passe aléatoire pour la keychain CI (n’importe lequel, fort) |
+| 5 | `APPLE_TEAM_ID` | Team ID Apple (10 caractères) — [Membership details](https://developer.apple.com/account) |
+
+### Générer les valeurs (PowerShell)
+
+```powershell
+# 1) BUILD_CERTIFICATE_BASE64  (après avoir créé klambo_dist.p12 — voir ios/ci/README-signing.md)
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:USERPROFILE\Desktop\klambo_dist.p12"))
+
+# 2) P12_PASSWORD → celui saisi pendant : openssl pkcs12 -export ...
+
+# 3) PROVISIONING_PROFILE_BASE64
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:USERPROFILE\Desktop\Klambo_AdHoc.mobileprovision"))
+
+# 4) KEYCHAIN_PASSWORD
+openssl rand -base64 16
+
+# 5) APPLE_TEAM_ID → developer.apple.com → Membership → Team ID
 ```
 
-Compte Apple Developer + signing requis pour installer sur appareil / TestFlight.
+### Lancer le build
+
+1. Commit + push des fichiers CI
+2. GitHub → **Actions** → **Build iOS IPA** → **Run workflow**
+3. Télécharger l’artifact `klambo-ios-ipa`
+
+Bundle ID : `com.klambocore.klamboMessagerie`
 
 ## Alertes (sons + notifications + badge)
 

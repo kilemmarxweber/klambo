@@ -18,11 +18,14 @@ import "package:klambo_messagerie/features/auth/my_profile_screen.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
 import "package:klambo_messagerie/features/calls/call_hub.dart";
 import "package:klambo_messagerie/features/chat/chat_screen.dart";
+import "package:klambo_messagerie/features/chat/split_chat.dart";
 import "package:klambo_messagerie/features/chat/contact_profile_screen.dart";
+import "package:klambo_messagerie/features/conversations/group_profile_screen.dart";
 import "package:klambo_messagerie/features/conversations/new_chat_screen.dart";
 import "package:klambo_messagerie/features/conversations/new_group_screen.dart";
 import "package:klambo_messagerie/features/presence/presence_controller.dart";
 import "package:klambo_messagerie/features/settings/settings_screen.dart";
+import "package:klambo_messagerie/widgets/chat_wallpaper.dart";
 import "package:klambo_messagerie/widgets/connection_sync_bar.dart";
 import "package:klambo_messagerie/widgets/eteyelo_messaging_app_bar.dart";
 import "package:klambo_messagerie/widgets/group_avatar.dart";
@@ -52,6 +55,60 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
   PresenceController? _presence;
   bool _listPrimed = false;
   final Map<String, String> _lastMessageKeys = {};
+  bool _narrowChatPushing = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _openChatFullScreenIfNarrow();
+  }
+
+  /// Retour au téléphone en portrait : le fil reprend tout l'écran.
+  void _openChatFullScreenIfNarrow() {
+    if (useSplitConversationLayout(context) || _narrowChatPushing) return;
+    final target = ref.read(splitChatProvider);
+    if (target == null) return;
+    _narrowChatPushing = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      if (useSplitConversationLayout(context)) {
+        _narrowChatPushing = false;
+        return;
+      }
+      final current = ref.read(splitChatProvider);
+      if (current == null) {
+        _narrowChatPushing = false;
+        return;
+      }
+      ref.read(splitChatProvider.notifier).state = null;
+      await Navigator.of(context).push(
+        AppPageRoute(builder: (_) => _chatFrom(current)),
+      );
+      _narrowChatPushing = false;
+      if (mounted) _load(silent: true);
+    });
+  }
+
+  ChatScreen _chatFrom(SplitChatTarget target, {bool embedded = false}) {
+    return ChatScreen(
+      key: ValueKey("chat-${target.organizationId}-${target.conversationId}"),
+      embedded: embedded,
+      organizationId: target.organizationId,
+      conversationId: target.conversationId,
+      title: target.title,
+      peerUserId: target.peerUserId,
+      peerImage: target.peerImage,
+      memberImages: target.memberImages,
+      peerTelephone: target.peerTelephone,
+      peerPrenom: target.peerPrenom,
+      peerRoleLabel: target.peerRoleLabel,
+      peerBranches: target.peerBranches,
+      noReply: target.noReply,
+      conversationType: target.conversationType,
+      myRole: target.myRole,
+      repliesLocked: target.repliesLocked,
+    );
+  }
 
   @override
   void initState() {
@@ -338,6 +395,23 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     return others;
   }
 
+  List<String> _groupAdminNames(Map item) {
+    final participants = item["participants"];
+    if (participants is! List) return const [];
+    final names = <String>[];
+    for (final raw in participants) {
+      if (raw is! Map) continue;
+      if (raw["groupRole"]?.toString() != "ADMIN") continue;
+      final label = displayPersonName(
+        prenom: raw["prenom"]?.toString(),
+        nom: raw["nom"]?.toString(),
+        name: raw["name"]?.toString(),
+      );
+      if (label.isNotEmpty) names.add(label);
+    }
+    return names;
+  }
+
   Map<String, dynamic>? _peerParticipant(Map item, String? myId) {
     final participants = item["participants"];
     if (participants is! List || myId == null) return null;
@@ -497,29 +571,29 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     if (orgId == null || id.isEmpty) return;
     final peer = _peerParticipant(item, myId);
     final isGroup = item["type"]?.toString() == "GROUP";
+    final target = SplitChatTarget(
+      organizationId: orgId,
+      conversationId: id,
+      title: titleOverride ?? item["title"]?.toString() ?? "Conversation",
+      peerUserId: isGroup ? null : _peerUserId(item, myId),
+      peerImage: isGroup ? null : peer?["image"]?.toString(),
+      memberImages: isGroup ? _groupPhotoSources(item, myId) : const [],
+      peerTelephone: isGroup ? null : extractPhoneNumber(peer),
+      peerPrenom: isGroup ? null : peer?["prenom"]?.toString(),
+      peerRoleLabel: isGroup ? null : peer?["roleLabel"]?.toString(),
+      peerBranches: isGroup ? const [] : _peerBranches(peer),
+      noReply: item["noReply"] == true ||
+          (item["title"]?.toString().contains("· Notifications") ?? false),
+      conversationType: item["type"]?.toString(),
+      myRole: item["myRole"]?.toString(),
+      repliesLocked: item["repliesLocked"] == true,
+    );
+    if (useSplitConversationLayout(context)) {
+      ref.read(splitChatProvider.notifier).state = target;
+      return;
+    }
     await Navigator.of(context).push(
-      AppPageRoute(
-        builder: (_) => ChatScreen(
-          organizationId: orgId,
-          conversationId: id,
-          title: titleOverride ??
-              item["title"]?.toString() ??
-              "Conversation",
-          peerUserId: isGroup ? null : _peerUserId(item, myId),
-          peerImage: isGroup ? null : peer?["image"]?.toString(),
-          memberImages: isGroup ? _groupPhotoSources(item, myId) : const [],
-          peerTelephone: isGroup ? null : extractPhoneNumber(peer),
-          peerPrenom: isGroup ? null : peer?["prenom"]?.toString(),
-          peerRoleLabel: isGroup ? null : peer?["roleLabel"]?.toString(),
-          peerBranches: isGroup ? const [] : _peerBranches(peer),
-          noReply: item["noReply"] == true ||
-              (item["title"]?.toString().contains("· Notifications") ??
-                  false),
-          conversationType: item["type"]?.toString(),
-          myRole: item["myRole"]?.toString(),
-          repliesLocked: item["repliesLocked"] == true,
-        ),
-      ),
+      AppPageRoute(builder: (_) => _chatFrom(target)),
     );
     if (mounted) _load(silent: true);
   }
@@ -671,8 +745,10 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     final canCompose = session.messagingOrganizations.isNotEmpty;
     final multiOrg = session.messagingOrganizations.length > 1;
     final filtered = _filteredItems;
+    final split = useSplitConversationLayout(context);
+    final openChat = ref.watch(splitChatProvider);
 
-    return Scaffold(
+    final page = Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
       appBar: _selectionMode
           ? AppBar(
@@ -921,6 +997,9 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                                 final item = filtered[index];
                                 final id = item["id"]?.toString() ?? "";
                                 final selected = _selectedIds.contains(id);
+                                final opened = split &&
+                                    !_selectionMode &&
+                                    openChat?.conversationId == id;
                                 final unread =
                                     (item["unreadCount"] as num?)?.toInt() ?? 0;
                                 final last = item["lastMessage"];
@@ -981,11 +1060,24 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                                     }
                                     _openChat(item, titleOverride: title);
                                   },
-                                  child: ColoredBox(
-                                    color: selected
-                                        ? EteyeloColors.primary
-                                            .withValues(alpha: 0.08)
-                                        : Colors.transparent,
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      color: selected
+                                          ? EteyeloColors.primary
+                                              .withValues(alpha: 0.08)
+                                          : opened
+                                              ? EteyeloColors.primary
+                                                  .withValues(alpha: 0.14)
+                                              : Colors.transparent,
+                                      border: opened
+                                          ? const Border(
+                                              left: BorderSide(
+                                                color: EteyeloColors.primary,
+                                                width: 3,
+                                              ),
+                                            )
+                                          : null,
+                                    ),
                                     child: Padding(
                                     padding: const EdgeInsets.symmetric(
                                       horizontal: 12,
@@ -1001,29 +1093,47 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                                               _toggleSelect(id);
                                               return;
                                             }
+                                            final orgId = item["organizationId"]
+                                                    ?.toString() ??
+                                                ref
+                                                    .read(sessionProvider)
+                                                    .activeOrgId;
                                             Navigator.of(context).push(
                                               AppPageRoute(
-                                                builder: (_) =>
-                                                    ContactProfileScreen(
-                                                  name: title,
-                                                  prenom: peer?["prenom"]
-                                                      ?.toString(),
-                                                  image: peerImage,
-                                                  telephone: extractPhoneNumber(peer) ??
-                                                      extractPhoneNumber(item),
-                                                  roleLabel: peer?[
-                                                          "roleLabel"]
-                                                      ?.toString(),
-                                                  branches:
-                                                      _peerBranches(peer),
-                                                  userId: _peerUserId(item, myId),
-                                                  organizationId: item[
-                                                              "organizationId"]
-                                                          ?.toString() ??
-                                                      ref
-                                                          .read(sessionProvider)
-                                                          .activeOrgId,
-                                                ),
+                                                builder: (_) => isGroup
+                                                    ? GroupProfileScreen(
+                                                        name: title,
+                                                        images:
+                                                            _groupPhotoSources(
+                                                          item,
+                                                          myId,
+                                                        ),
+                                                        adminNames:
+                                                            _groupAdminNames(
+                                                          item,
+                                                        ),
+                                                        organizationId: orgId,
+                                                        conversationId: id,
+                                                      )
+                                                    : ContactProfileScreen(
+                                                        name: title,
+                                                        prenom: peer?["prenom"]
+                                                            ?.toString(),
+                                                        image: peerImage,
+                                                        telephone:
+                                                            extractPhoneNumber(
+                                                                    peer) ??
+                                                                extractPhoneNumber(
+                                                                    item),
+                                                        roleLabel: peer?[
+                                                                "roleLabel"]
+                                                            ?.toString(),
+                                                        branches:
+                                                            _peerBranches(peer),
+                                                        userId: _peerUserId(
+                                                            item, myId),
+                                                        organizationId: orgId,
+                                                      ),
                                               ),
                                             );
                                           },
@@ -1228,6 +1338,77 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                           ),
           ),
         ],
+      ),
+    );
+
+    if (!split) return page;
+
+    final listWidth = conversationListPaneWidth(
+      MediaQuery.sizeOf(context).width,
+    );
+    return PopScope(
+      canPop: openChat == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        ref.read(splitChatProvider.notifier).state = null;
+      },
+      child: ColoredBox(
+        color: EteyeloColors.primaryDark,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SizedBox(width: listWidth, child: page),
+            VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: ChatPalette.divider(context),
+            ),
+            Expanded(
+              child: openChat == null
+                  ? _SplitConversationPlaceholder(
+                      message: l10n.selectConversation,
+                    )
+                  : _chatFrom(openChat, embedded: true),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SplitConversationPlaceholder extends StatelessWidget {
+  const _SplitConversationPlaceholder({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: ChatWallpaper.baseFor(context),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.forum_outlined,
+                size: 72,
+                color: Colors.grey.shade400,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 16,
+                  color: ChatPalette.subtitle(context),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

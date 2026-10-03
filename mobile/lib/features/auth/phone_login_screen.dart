@@ -10,7 +10,11 @@ import "package:klambo_messagerie/widgets/country_code_picker.dart";
 import "package:shared_preferences/shared_preferences.dart";
 
 class PhoneLoginScreen extends ConsumerStatefulWidget {
-  const PhoneLoginScreen({super.key});
+  const PhoneLoginScreen({super.key, this.changeContact = false});
+
+  /// Ouvert depuis les paramètres : la session actuelle reste
+  /// tant que le nouveau numéro n’est pas confirmé.
+  final bool changeContact;
 
   @override
   ConsumerState<PhoneLoginScreen> createState() => _PhoneLoginScreenState();
@@ -64,6 +68,23 @@ class _PhoneLoginScreenState extends ConsumerState<PhoneLoginScreen> {
         dialCode: _country.dialCode,
         nationalInput: _phoneCtrl.text,
       );
+
+  String? get _currentPhone {
+    final user = ref.read(sessionProvider).me?["user"];
+    if (user is! Map) return null;
+    return user["telephone"]?.toString() ??
+        user["phone"]?.toString() ??
+        user["phoneNumber"]?.toString();
+  }
+
+  String _digits(String? value) =>
+      (value ?? "").replaceAll(RegExp(r"\D"), "");
+
+  bool get _sameAsCurrent {
+    final current = _digits(_currentPhone);
+    if (current.isEmpty) return false;
+    return _digits(_fullPhone) == current;
+  }
 
   String get _langCode {
     switch (ref.read(localeProvider).lang) {
@@ -129,6 +150,10 @@ class _PhoneLoginScreenState extends ConsumerState<PhoneLoginScreen> {
 
   Future<void> _requestOtp(L10n l10n) async {
     if (!_validateNational(l10n)) return;
+    if (widget.changeContact && _sameAsCurrent) {
+      setState(() => _error = l10n.changeContactSame);
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
@@ -170,6 +195,8 @@ class _PhoneLoginScreenState extends ConsumerState<PhoneLoginScreen> {
         code: _codeCtrl.text.trim(),
       );
       await ref.read(sessionProvider.notifier).applyAuthPayload(data);
+      if (!mounted || !widget.changeContact) return;
+      Navigator.of(context).popUntil((route) => route.isFirst);
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
@@ -204,6 +231,11 @@ class _PhoneLoginScreenState extends ConsumerState<PhoneLoginScreen> {
     ];
 
     return Scaffold(
+      appBar: widget.changeContact
+          ? AppBar(
+              title: Text(l10n.changeContact),
+            )
+          : null,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -228,7 +260,7 @@ class _PhoneLoginScreenState extends ConsumerState<PhoneLoginScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                l10n.appName,
+                widget.changeContact ? l10n.changeContact : l10n.appName,
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                       fontWeight: FontWeight.w700,
@@ -237,12 +269,25 @@ class _PhoneLoginScreenState extends ConsumerState<PhoneLoginScreen> {
               ),
               const SizedBox(height: 6),
               Text(
-                l10n.messaging,
+                widget.changeContact
+                    ? l10n.changeContactHint
+                    : l10n.messaging,
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       color: scheme.onSurface.withValues(alpha: 0.75),
                     ),
               ),
+              if (widget.changeContact &&
+                  (_currentPhone?.trim().isNotEmpty ?? false)) ...[
+                const SizedBox(height: 8),
+                Text(
+                  "${l10n.changeContactCurrent} : ${_currentPhone!.trim()}",
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ],
               AnimatedSwitcher(
                 duration: const Duration(milliseconds: 220),
                 switchInCurve: Curves.easeOut,

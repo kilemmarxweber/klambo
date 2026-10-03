@@ -20,10 +20,13 @@ import "package:klambo_messagerie/core/sound_service.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
 import "package:klambo_messagerie/features/calls/call_hub.dart";
 import "package:klambo_messagerie/features/chat/active_chat_provider.dart";
+import "package:klambo_messagerie/features/chat/split_chat.dart";
 import "package:klambo_messagerie/features/chat/contact_profile_screen.dart";
+import "package:klambo_messagerie/features/conversations/group_profile_screen.dart";
 import "package:klambo_messagerie/features/conversations/group_settings_screen.dart";
 import "package:klambo_messagerie/features/presence/presence_controller.dart";
 import "package:klambo_messagerie/widgets/chat_composer.dart";
+import "package:klambo_messagerie/widgets/chat_wallpaper.dart";
 import "package:klambo_messagerie/widgets/connection_sync_bar.dart";
 import "package:klambo_messagerie/widgets/eteyelo_messaging_app_bar.dart";
 import "package:klambo_messagerie/widgets/linkified_text.dart";
@@ -115,6 +118,7 @@ class ChatScreen extends ConsumerStatefulWidget {
     this.conversationType,
     this.myRole,
     this.repliesLocked = false,
+    this.embedded = false,
   });
 
   final String organizationId;
@@ -132,6 +136,8 @@ class ChatScreen extends ConsumerStatefulWidget {
   final String? conversationType;
   final String? myRole;
   final bool repliesLocked;
+  /// Affiché à côté de la liste (tablette / paysage), sans route propre.
+  final bool embedded;
 
   @override
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
@@ -170,6 +176,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   late String? _conversationType = widget.conversationType;
   List<Map<String, dynamic>> _satisfactionPending = [];
   bool _satisfactionPromptOpen = false;
+  bool _splitHandoff = false;
 
   bool get _isGroup => (_conversationType ?? "").toUpperCase() == "GROUP";
   bool get _isGroupAdmin => _myRole == "ADMIN";
@@ -244,6 +251,45 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ),
     );
     _focusComposer();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _handOffToSplitPaneIfNeeded();
+  }
+
+  /// Si l'écran a été ouvert en plein écran puis que l'appareil passe
+  /// en tablette ou en paysage, on rend le fil dans le panneau de droite.
+  void _handOffToSplitPaneIfNeeded() {
+    if (widget.embedded || _splitHandoff) return;
+    if (!useSplitConversationLayout(context)) return;
+    _splitHandoff = true;
+    final target = SplitChatTarget(
+      organizationId: widget.organizationId,
+      conversationId: widget.conversationId,
+      title: widget.title,
+      peerUserId: widget.peerUserId,
+      peerImage: widget.peerImage,
+      memberImages: widget.memberImages,
+      peerTelephone: widget.peerTelephone,
+      peerPrenom: widget.peerPrenom,
+      peerRoleLabel: widget.peerRoleLabel,
+      peerBranches: widget.peerBranches,
+      noReply: widget.noReply,
+      conversationType: widget.conversationType,
+      myRole: widget.myRole,
+      repliesLocked: widget.repliesLocked,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!useSplitConversationLayout(context)) {
+        _splitHandoff = false;
+        return;
+      }
+      ref.read(splitChatProvider.notifier).state = target;
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    });
   }
 
   @override
@@ -438,6 +484,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _openPeerProfile() {
+    if (_isGroup) {
+      Navigator.of(context).push(
+        AppPageRoute(
+          builder: (_) => GroupProfileScreen(
+            name: _headerTitle,
+            images: widget.memberImages,
+            organizationId: widget.organizationId,
+            conversationId: widget.conversationId,
+          ),
+        ),
+      );
+      return;
+    }
     Navigator.of(context).push(
       AppPageRoute(
         builder: (_) => ContactProfileScreen(
@@ -1435,6 +1494,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         peerImage: widget.peerImage,
         groupPhotos: _isGroup ? widget.memberImages : null,
         peerName: _headerTitle,
+        showBack: !widget.embedded,
         onProfileTap: _openPeerProfile,
         actions: [
           if (canCall)
@@ -1480,12 +1540,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ),
         ],
       ),
-      backgroundColor: ChatPalette.background(context),
+      backgroundColor: ChatWallpaper.baseFor(context),
       body: Column(
         children: [
           if (_fromCache && _messages.isNotEmpty) const ConnectionSyncBar(),
           Expanded(
-            child: _messages.isEmpty
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                const ChatWallpaper(),
+                _messages.isEmpty
                 ? Center(
                     child: _loading
                         ? const SizedBox.shrink()
@@ -1721,6 +1785,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       );
                     },
                   ),
+              ],
+            ),
           ),
           if (_sendError != null)
             Material(
@@ -2448,10 +2514,16 @@ class _MessageBubble extends StatelessWidget {
         decoration: BoxDecoration(
           color: bg,
           borderRadius: _radius,
+          border: Border.all(
+            color: dark
+                ? Colors.white.withValues(alpha: 0.16)
+                : const Color(0xFFB4BCC6),
+            width: 1,
+          ),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.06),
-              blurRadius: 3,
+              color: Colors.black.withValues(alpha: dark ? 0.28 : 0.14),
+              blurRadius: 4,
               offset: const Offset(0, 1),
             ),
           ],

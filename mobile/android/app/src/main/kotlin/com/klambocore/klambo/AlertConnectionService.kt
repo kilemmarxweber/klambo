@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.Person
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -11,13 +12,16 @@ import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.AudioAttributes
+import android.media.Ringtone
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -44,11 +48,15 @@ class AlertConnectionService : Service() {
     private var reconnect: Runnable? = null
     private val messageNotifIds = HashMap<String, Int>()
     private var messageSeq = 3000
+    private var ringtone: Ringtone? = null
+    private var ringTimeout: Runnable? = null
+    private var ringingCallId: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         stopped = false
+        AppVisibility.serviceRunning = true
         ensureChannels()
         val ongoing = ongoingNotification()
         if (Build.VERSION.SDK_INT >= 34) {
@@ -60,8 +68,18 @@ class AlertConnectionService : Service() {
         } else {
             startForeground(ONGOING_ID, ongoing)
         }
+        when (intent?.action) {
+            ACTION_STOP_RING -> {
+                stopRing()
+                return START_STICKY
+            }
+            ACTION_DECLINE -> {
+                declinePending()
+                return START_STICKY
+            }
+        }
         acquireWakeLock()
-        connect()
+        if (socket == null) connect()
         return START_STICKY
     }
 
@@ -79,7 +97,10 @@ class AlertConnectionService : Service() {
 
     override fun onDestroy() {
         stopped = true
+        AppVisibility.serviceRunning = false
         reconnect?.let { mainHandler.removeCallbacks(it) }
+        ringTimeout?.let { mainHandler.removeCallbacks(it) }
+        stopRing()
         socket?.close(1000, "stop")
         socket = null
         client.dispatcher.executorService.shutdown()
@@ -154,12 +175,20 @@ class AlertConnectionService : Service() {
         } catch (_: Exception) {
             return
         }
-        if (event.optString("type") == "ping") return
-        if (flutterStillAlive()) return
         val type = event.optString("type")
+        if (type == "ping" || type == "pong" || type == "connected") return
         val me = myUserId()
+        val callId = event.optString("callId")
+        if ((type == "call.hangup" || type == "call.reject" || type == "call.ended") &&
+            callId.isNotBlank() && callId == ringingCallId
+        ) {
+            stopIncoming()
+            return
+        }
+        // L'écran ouvert gère lui-même messages et appels.
+        if (AppVisibility.inForeground && flutterStillAlive()) return
         when {
-            type == "message.created" -> showMessage(event, me)
+            type == "message.created" && !flutterStillAlive() -> showMessage(event, me)
             type == "call.offer" && event.optString("toUserId") == me -> showCall(event)
         }
     }
@@ -226,11 +255,173 @@ class AlertConnectionService : Service() {
 
     private fun showCall(event: JSONObject) {
         if (!prefs().getBoolean("flutter.klambo_alert_call_notif", true)) return
+        val callId = event.optString("callId")
+        if (callId.isBlank()) return
+        ringingCallId = callId
+        prefs().edit().putString(PENDING_CALL_KEY, event.toString()).commit()
         val payload = event.optJSONObject("payload")
         val title = payload?.optString("callerName").orEmpty().ifBlank { "Klambocore" }
         val kind = payload?.optString("kind").orEmpty()
         val body = if (kind.equals("VIDEO", true)) "Appel vidéo entrant" else "Appel audio entrant"
-        notify(900001, CALL_CHANNEL, title, body, soundsOn(), call = true)
+        wakeScreen()
+        postIncomingCall(title, body, event.toString(), soundsOn())
+        if (soundsOn()) startRing()
+        armRingTimeout()
+    }
+
+    private fun wakeScreen() {
+        val pm = getSystemService(PowerManager::class.java)
+        if (pm.isInteractive) return
+        val lock = pm.newWakeLock(
+            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                PowerManager.ON_AFTER_RELEASE,
+            "klambo:incoming-call",
+        )
+        lock.acquire(12_000L)
+    }
+
+    private fun startRing() {
+        stopRing()
+        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        val tone = RingtoneManager.getRingtone(applicationContext, uri) ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) tone.isLooping = true
+        tone.audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+        ringtone = tone
+        tone.play()
+    }
+
+    private fun stopRing() {
+        ringTimeout?.let { mainHandler.removeCallbacks(it) }
+        ringTimeout = null
+        try {
+            ringtone?.stop()
+        } catch (_: Exception) {
+        }
+        ringtone = null
+    }
+
+    private fun armRingTimeout() {
+        ringTimeout?.let { mainHandler.removeCallbacks(it) }
+        val task = Runnable {
+            if (ringingCallId != null) stopIncoming()
+        }
+        ringTimeout = task
+        mainHandler.postDelayed(task, 45_000L)
+    }
+
+    private fun stopIncoming() {
+        ringingCallId = null
+        prefs().edit().remove(PENDING_CALL_KEY).apply()
+        stopRing()
+        getSystemService(NotificationManager::class.java).cancel(CALL_NOTIF_ID)
+    }
+
+    private fun declinePending() {
+        val raw = prefs().getString(PENDING_CALL_KEY, null)
+        stopIncoming()
+        if (raw.isNullOrBlank()) return
+        val event = try {
+            JSONObject(raw)
+        } catch (_: Exception) {
+            return
+        }
+        val org = event.optString("organizationId")
+        val callId = event.optString("callId")
+        val peer = event.optString("fromUserId")
+        val me = myUserId()
+        if (org.isBlank() || callId.isBlank()) return
+        socket?.send(
+            JSONObject()
+                .put("type", "call.reject")
+                .put("organizationId", org)
+                .put("callId", callId)
+                .put("toUserId", peer)
+                .put("fromUserId", me ?: "")
+                .toString(),
+        )
+        val token = prefs().getString("flutter.klambo_auth_token", null) ?: return
+        val url = apiBase() + "/api/mobile/v1/organizations/$org/calls/$callId/actions"
+        val body = """{"action":"reject"}""".toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer $token")
+            .post(body)
+            .build()
+        client.newCall(request).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {}
+            override fun onResponse(call: okhttp3.Call, response: Response) {
+                response.close()
+            }
+        })
+    }
+
+    private fun apiBase(): String {
+        val stored = prefs().getString("flutter.klambo_api_base_url", null)
+            ?.trim()
+            ?.trimEnd('/')
+            ?.ifBlank { null }
+        return stored ?: "https://klambocore.com"
+    }
+
+    private fun incomingIntent(raw: String): Intent {
+        return Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP
+            putExtra(EXTRA_CALL, raw)
+        }
+    }
+
+    private fun postIncomingCall(title: String, body: String, raw: String, sound: Boolean) {
+        val answer = PendingIntent.getActivity(
+            this,
+            11,
+            incomingIntent(raw),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val decline = PendingIntent.getService(
+            this,
+            12,
+            Intent(this, AlertConnectionService::class.java).setAction(ACTION_DECLINE),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CALL_CHANNEL)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+        builder
+            .setSmallIcon(android.R.drawable.sym_call_incoming)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setCategory(Notification.CATEGORY_CALL)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setContentIntent(answer)
+            .setFullScreenIntent(answer, true)
+            .setOnlyAlertOnce(false)
+        if (Build.VERSION.SDK_INT >= 31) {
+            val person = Person.Builder().setName(title).setImportant(true).build()
+            builder.setStyle(Notification.CallStyle.forIncomingCall(person, decline, answer))
+            builder.addPerson(person)
+        } else {
+            builder.addAction(0, "Refuser", decline)
+            builder.addAction(0, "Décrocher", answer)
+        }
+        if (sound && Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            builder.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            @Suppress("DEPRECATION")
+            builder.setPriority(Notification.PRIORITY_MAX)
+        }
+        getSystemService(NotificationManager::class.java).notify(CALL_NOTIF_ID, builder.build())
     }
 
     private fun notify(
@@ -298,8 +489,8 @@ class AlertConnectionService : Service() {
         }
         return builder
             .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentTitle("Klambocore")
-            .setContentText("Alertes actives")
+            .setContentTitle("Klambo")
+            .setContentText("Prêt à recevoir les appels")
             .setOngoing(true)
             .setContentIntent(launch)
             .setCategory(Notification.CATEGORY_SERVICE)
@@ -353,8 +544,8 @@ class AlertConnectionService : Service() {
             },
         )
         manager.createNotificationChannel(
-            NotificationChannel(CALL_CHANNEL, "Appels Klambocore", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Appels entrants"
+            NotificationChannel(CALL_CHANNEL, "Appels Klambocore", NotificationManager.IMPORTANCE_MAX).apply {
+                description = "Appels entrants, même écran verrouillé"
                 setSound(ringSound, AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
@@ -376,7 +567,12 @@ class AlertConnectionService : Service() {
     companion object {
         private const val ONGOING_ID = 42
         private const val MESSAGE_CHANNEL = "klambo_messages_bg_v2"
-        private const val CALL_CHANNEL = "klambo_calls_bg_v1"
+        const val ACTION_STOP_RING = "com.klambocore.klambo.STOP_RING"
+        const val ACTION_DECLINE = "com.klambocore.klambo.DECLINE_CALL"
+        const val EXTRA_CALL = "klambo_call_event"
+        private const val CALL_NOTIF_ID = 900001
+        private const val PENDING_CALL_KEY = "flutter.klambo_pending_call"
+        private const val CALL_CHANNEL = "klambo_calls_bg_v2"
         private const val PRESENCE_CHANNEL = "klambo_presence_v1"
 
         fun wsUrl(baseRaw: String, token: String): String {

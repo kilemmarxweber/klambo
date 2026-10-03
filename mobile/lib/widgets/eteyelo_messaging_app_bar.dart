@@ -111,6 +111,8 @@ class EteyeloChatAppBar extends StatelessWidget implements PreferredSizeWidget {
     required this.peerName,
     this.onProfileTap,
     this.actions = const [],
+    this.showBack = true,
+    this.onBack,
   });
 
   final String title;
@@ -121,6 +123,8 @@ class EteyeloChatAppBar extends StatelessWidget implements PreferredSizeWidget {
   final String peerName;
   final VoidCallback? onProfileTap;
   final List<Widget> actions;
+  final bool showBack;
+  final VoidCallback? onBack;
 
   @override
   Size get preferredSize => const Size.fromHeight(kToolbarHeight);
@@ -128,6 +132,13 @@ class EteyeloChatAppBar extends StatelessWidget implements PreferredSizeWidget {
   @override
   Widget build(BuildContext context) {
     return AppBar(
+      automaticallyImplyLeading: showBack && onBack == null,
+      leading: showBack && onBack != null
+          ? IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: onBack,
+            )
+          : null,
       titleSpacing: 0,
       title: InkWell(
         onTap: onProfileTap,

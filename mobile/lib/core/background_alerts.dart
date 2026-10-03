@@ -14,6 +14,10 @@ class BackgroundAlerts {
   static const _batteryAskedKey = "klambo_battery_asked";
   static Timer? _beat;
 
+  /// Vrai après le démarrage du service Android qui écoute les appels
+  /// écran verrouillé ou application quittée.
+  static bool serviceStarted = false;
+
   static bool get _android =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
@@ -25,12 +29,16 @@ class BackgroundAlerts {
     });
     try {
       await _channel.invokeMethod<void>("start");
+      serviceStarted = true;
+      unawaited(_askCallPrivilegesOnce());
     } catch (e) {
+      serviceStarted = false;
       debugPrint("[bg] start: $e");
     }
   }
 
   static Future<void> stop() async {
+    serviceStarted = false;
     _beat?.cancel();
     _beat = null;
     if (!_android) return;
@@ -42,6 +50,16 @@ class BackgroundAlerts {
       await _channel.invokeMethod<void>("stop");
     } catch (e) {
       debugPrint("[bg] stop: $e");
+    }
+  }
+
+  /// Coupe la sonnerie native une fois que l'écran d'appel Flutter est prêt.
+  static Future<void> stopNativeRing() async {
+    if (!_android || !serviceStarted) return;
+    try {
+      await _channel.invokeMethod<void>("stopRing");
+    } catch (e) {
+      debugPrint("[bg] stopRing: $e");
     }
   }
 
@@ -57,16 +75,16 @@ class BackgroundAlerts {
     } catch (_) {}
   }
 
-  /// Une seule demande : sans ça, Android endort le téléphone et coupe le son.
-  static Future<void> askBatteryExemptionOnce() async {
+  /// Une seule demande : batterie + affichage par-dessus l'écran verrouillé.
+  static Future<void> _askCallPrivilegesOnce() async {
     if (!_android) return;
     try {
       final prefs = await SharedPreferences.getInstance();
       if (prefs.getBool(_batteryAskedKey) == true) return;
       await prefs.setBool(_batteryAskedKey, true);
-      await _channel.invokeMethod<bool>("battery");
+      await _channel.invokeMethod<bool>("prepareIncomingCalls");
     } catch (e) {
-      debugPrint("[bg] battery: $e");
+      debugPrint("[bg] privileges: $e");
     }
   }
 }
