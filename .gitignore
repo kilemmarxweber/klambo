@@ -1,5 +1,15 @@
-
+# Local / generated (do not commit)
 mobile/.gradle-home/
 mobile/build/
 mobile/android/.gradle/
+mobile/android/app/build/
+mobile/.dart_tool/
+mobile/.flutter-plugins-dependencies
 
+# Signing material (never commit)
+*.p12
+*.mobileprovision
+*.cer
+*.pem
+*_dist.key
+CertificateSigningRequest.certSigningRequest
