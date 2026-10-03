@@ -188,6 +188,17 @@ class MessagingRepository {
     );
   }
 
+  /// Fiche d'un contact : même `telephone` que « Mon profil ».
+  Future<Map<String, dynamic>> contact(
+    String organizationId,
+    String userId,
+  ) {
+    return _api.getJson(
+      "/organizations/$organizationId/recipients",
+      query: {"userId": userId},
+    );
+  }
+
   Future<Map<String, dynamic>> searchRecipients(
     String organizationId, {
     String query = "",

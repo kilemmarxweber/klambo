@@ -54,10 +54,12 @@ class _ContactProfileScreenState extends ConsumerState<ContactProfileScreen> {
   @override
   void initState() {
     super.initState();
-    _phone = extractPhoneNumber(widget.telephone);
-    if (_phone == null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _loadPhone());
-    }
+    _phone = _phoneFrom(widget.telephone);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadPhone());
+  }
+
+  String? _phoneFrom(dynamic source) {
+    return accountTelephone(source) ?? extractPhoneNumber(source);
   }
 
   Future<void> _loadPhone() async {
@@ -69,23 +71,29 @@ class _ContactProfileScreenState extends ConsumerState<ContactProfileScreen> {
     setState(() => _loadingPhone = true);
     try {
       final repo = ref.read(messagingRepositoryProvider);
-      final queries = <String>[
-        if ((widget.prenom ?? "").trim().isNotEmpty) widget.prenom!.trim(),
-        if (widget.name.trim().isNotEmpty) widget.name.trim(),
-        "",
-      ];
       String? found;
-      for (final query in queries) {
-        final data = await repo.searchRecipients(orgId, query: query);
-        final items = (data["items"] as List?) ?? const [];
-        for (final raw in items) {
-          if (raw is! Map) continue;
-          final id = raw["userId"]?.toString() ?? raw["id"]?.toString();
-          if (id != userId) continue;
-          found = extractPhoneNumber(raw);
+      try {
+        final direct = await repo.contact(orgId, userId);
+        final item = direct["item"];
+        found = _phoneFrom(item is Map ? item : direct);
+      } catch (_) {}
+      if (found == null) {
+        final queries = <String>[
+          if ((widget.prenom ?? "").trim().isNotEmpty) widget.prenom!.trim(),
+          if (widget.name.trim().isNotEmpty) widget.name.trim(),
+        ];
+        for (final query in queries) {
+          final data = await repo.searchRecipients(orgId, query: query);
+          final items = (data["items"] as List?) ?? const [];
+          for (final raw in items) {
+            if (raw is! Map) continue;
+            final id = raw["userId"]?.toString() ?? raw["id"]?.toString();
+            if (id != userId) continue;
+            found = _phoneFrom(raw);
+            if (found != null) break;
+          }
           if (found != null) break;
         }
-        if (found != null) break;
       }
       if (!mounted) return;
       setState(() => _phone = found ?? _phone);

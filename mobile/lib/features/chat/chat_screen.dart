@@ -541,10 +541,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ? widget.peerImage
               : msg["senderImage"]?.toString(),
           telephone: isPeer
-              ? (extractPhoneNumber(msg) ?? widget.peerTelephone)
-              : (extractPhoneNumber(msg) ??
-                  msg["senderTelephone"]?.toString() ??
-                  msg["senderPhone"]?.toString()),
+              ? (accountTelephone(msg) ??
+                  widget.peerTelephone ??
+                  msg["senderTelephone"]?.toString())
+              : (accountTelephone(msg) ??
+                  msg["senderTelephone"]?.toString()),
           roleLabel: isPeer
               ? widget.peerRoleLabel
               : msg["senderRoleLabel"]?.toString(),

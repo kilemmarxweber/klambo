@@ -431,8 +431,9 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
             map["name"] ??= u["name"];
             map["roleLabel"] ??= u["roleLabel"] ?? u["role"];
           }
-          map["telephone"] = extractPhoneNumber(map) ??
-              extractPhoneNumber(p["user"]);
+          map["telephone"] = accountTelephone(map) ??
+              accountTelephone(p["user"]) ??
+              map["telephone"];
           return map;
         }
       }
@@ -1126,9 +1127,11 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                                                             ?.toString(),
                                                         image: peerImage,
                                                         telephone:
-                                                            extractPhoneNumber(
+                                                            accountTelephone(
                                                                     peer) ??
                                                                 extractPhoneNumber(
+                                                                    peer) ??
+                                                                accountTelephone(
                                                                     item),
                                                         roleLabel: peer?[
                                                                 "roleLabel"]
