@@ -1,5 +1,7 @@
-/// Prénom et nom restent séparés : le postnom n'est pas affiché.
-String personPrenom(String? prenom) => prenom?.trim() ?? "";
+import "package:klambo_messagerie/core/phone_number.dart";
+
+/// Prénom affiché : le numéro collé au texte n'est pas un prénom.
+String personPrenom(String? prenom) => textWithoutPhone(prenom);
 
 String _withoutLeading(String value, String token) {
   final piece = token.trim();
@@ -13,17 +15,27 @@ String _withoutLeading(String value, String token) {
   return rest;
 }
 
-/// Un seul des deux : [nom] s'il est rempli, sinon [name]. Jamais les deux.
+/// Un seul nom de famille. [nom] s'il est rempli, sinon [name].
+/// Un numéro collé au texte est retiré avant de couper le postnom.
 String personNom({
   String? nom,
   String? name,
   String? prenom,
   String? postnom,
 }) {
-  final family = (nom?.trim().isNotEmpty ?? false)
-      ? nom!.trim()
-      : (name?.trim() ?? "");
-  return _withoutLeading(family, personPrenom(prenom));
+  final family = textWithoutPhone(
+    (nom?.trim().isNotEmpty ?? false) ? nom!.trim() : (name?.trim() ?? ""),
+  );
+  final first = personPrenom(prenom);
+  final rest = _withoutLeading(family, first);
+  final tokens = rest
+      .split(RegExp(r"\s+"))
+      .where((part) => part.isNotEmpty)
+      .toList();
+  if (tokens.isEmpty) return "";
+  // Sans prénom : deux mots. Avec prénom : un seul mot de nom.
+  final count = first.isEmpty ? 2 : 1;
+  return tokens.take(count).join(" ");
 }
 
 /// Affiche le prénom plus un seul nom, sans postnom et sans répétition.

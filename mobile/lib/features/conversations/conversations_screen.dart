@@ -423,6 +423,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
             (p["user"] is Map ? p["user"]["id"]?.toString() : null);
         if (id != null && id != myId) {
           final map = Map<String, dynamic>.from(p);
+          map["userId"] ??= id;
           if (p["user"] is Map) {
             final u = Map<String, dynamic>.from(p["user"] as Map);
             map["prenom"] ??= u["prenom"];
@@ -430,9 +431,15 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
             map["image"] ??= u["image"];
             map["name"] ??= u["name"];
             map["roleLabel"] ??= u["roleLabel"] ?? u["role"];
+            map["telephone"] ??=
+                u["telephone"] ?? u["phone"] ?? u["phoneNumber"];
+            map["phoneNumber"] ??= u["phoneNumber"];
+            map["branches"] ??= u["branches"];
           }
           map["telephone"] = accountTelephone(map) ??
               accountTelephone(p["user"]) ??
+              extractPhoneNumber(map) ??
+              extractPhoneNumber(p["user"]) ??
               map["telephone"];
           return map;
         }
@@ -581,7 +588,9 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
       peerUserId: isGroup ? null : _peerUserId(item, myId),
       peerImage: isGroup ? null : peer?["image"]?.toString(),
       memberImages: isGroup ? _groupPhotoSources(item, myId) : const [],
-      peerTelephone: isGroup ? null : extractPhoneNumber(peer),
+      peerTelephone: isGroup
+          ? null
+          : (accountTelephone(peer) ?? extractPhoneNumber(peer)),
       peerPrenom: isGroup ? null : peer?["prenom"]?.toString(),
       peerNom: isGroup ? null : peer?["nom"]?.toString(),
       peerPostnom: isGroup ? null : peer?["postnom"]?.toString(),
@@ -1132,6 +1141,8 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                                                                 extractPhoneNumber(
                                                                     peer) ??
                                                                 accountTelephone(
+                                                                    item) ??
+                                                                extractPhoneNumber(
                                                                     item),
                                                         roleLabel: peer?[
                                                                 "roleLabel"]

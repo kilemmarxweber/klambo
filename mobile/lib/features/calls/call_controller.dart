@@ -4,6 +4,7 @@ import "package:flutter/foundation.dart";
 import "package:flutter_webrtc/flutter_webrtc.dart";
 import "package:klambo_messagerie/data/calls_repository.dart";
 import "package:klambo_messagerie/data/messaging_socket.dart";
+import "package:klambo_messagerie/features/calls/call_playback.dart";
 
 enum CallPhase { idle, ringingOut, ringingIn, connecting, active, ended }
 
@@ -57,6 +58,8 @@ class CallController extends ChangeNotifier {
   bool _ending = false;
   bool micMuted = false;
   bool camOff = false;
+  /// Coupé par défaut : volume de conversation. Activé : son fort.
+  bool speakerOn = false;
   final List<RTCIceCandidate> _pendingRemoteIce = [];
   final Set<String> _appliedRemoteIce = {};
   bool _answerApplied = false;
@@ -139,6 +142,7 @@ class CallController extends ChangeNotifier {
       if (_disposed || _ending) return;
       if (event.streams.isNotEmpty) {
         remoteRenderer.srcObject = event.streams[0];
+        unawaited(_applyAudioRoute());
         _safeNotify();
       }
     };
@@ -177,7 +181,43 @@ class CallController extends ChangeNotifier {
     for (final track in _localStream!.getTracks()) {
       await _pc!.addTrack(track, _localStream!);
     }
+    await _applyAudioRoute();
     _safeNotify();
+  }
+
+  double get _playbackVolume {
+    if (speakerOn) return 1;
+    if (kIsWeb) return 0.42;
+    return 0.8;
+  }
+
+  Future<void> _applyAudioRoute() async {
+    final volume = _playbackVolume;
+    if (!kIsWeb) {
+      try {
+        if (defaultTargetPlatform == TargetPlatform.iOS) {
+          await Helper.setAppleAudioIOMode(
+            AppleAudioIOMode.localAndRemote,
+            preferSpeakerOutput: speakerOn,
+          );
+        }
+        await Helper.setSpeakerphoneOn(speakerOn);
+      } catch (e) {
+        debugPrint("[call] speaker: $e");
+      }
+      final stream = remoteRenderer.srcObject;
+      if (stream != null) {
+        for (final track in stream.getAudioTracks()) {
+          try {
+            await Helper.setVolume(volume, track);
+          } catch (_) {}
+        }
+      }
+    }
+    applyCallPlaybackVolume(volume);
+    Future<void>.delayed(const Duration(milliseconds: 250), () {
+      if (!_disposed) applyCallPlaybackVolume(_playbackVolume);
+    });
   }
 
   Future<void> startOutgoing({
@@ -654,6 +694,15 @@ class CallController extends ChangeNotifier {
     }
   }
 
+  Future<void> toggleSpeaker() async {
+    if (_disposed || _ending) return;
+    speakerOn = !speakerOn;
+    try {
+      await _applyAudioRoute();
+    } catch (_) {}
+    _safeNotify();
+  }
+
   Future<void> toggleMute() async {
     if (_disposed || _ending) return;
     micMuted = !micMuted;
@@ -783,6 +832,7 @@ class CallController extends ChangeNotifier {
     _appliedRemoteIce.clear();
     _answerApplied = false;
     _incomingSdp = null;
+    speakerOn = false;
   }
 
   /// Teardown synchrone best-effort (swipe kill / dispose Riverpod).

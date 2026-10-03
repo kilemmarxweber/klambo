@@ -16,14 +16,35 @@ class CallTraceInfo {
 
   bool get isVideo => kind.toUpperCase() == "VIDEO";
 
+  String get _kindLabel => isVideo ? "Appel vidéo" : "Appel vocal";
+
+  bool get _cancelled =>
+      endReason == "cancelled" ||
+      (endReason == "hangup" && durationMs == 0 && status == "ENDED");
+
+  /// Titre de la carte dans la bulle.
+  String get headline {
+    if (status == "REJECTED") return "$_kindLabel refusé";
+    if (status == "MISSED" || endReason == "missed") return "$_kindLabel manqué";
+    if (_cancelled) return "$_kindLabel annulé";
+    return _kindLabel;
+  }
+
+  /// Ligne sous le titre : rappel, ou durée.
+  String get caption {
+    if (isMissedLike || durationMs <= 0) return "Appuyez pour rappeler";
+    final total = (durationMs / 1000).round();
+    final m = total ~/ 60;
+    final s = total % 60;
+    if (m <= 0) return "$s s";
+    return "$m min ${s.toString().padLeft(2, "0")} s";
+  }
+
   String get label {
     final base = isVideo ? "Appel vidéo" : "Appel audio";
     if (status == "REJECTED") return "$base · refusé";
     if (status == "MISSED" || endReason == "missed") return "$base · manqué";
-    if (endReason == "cancelled" ||
-        (endReason == "hangup" && durationMs == 0 && status == "ENDED")) {
-      return "$base · annulé";
-    }
+    if (_cancelled) return "$base · annulé";
     if (durationMs > 0) {
       final total = (durationMs / 1000).round();
       final m = total ~/ 60;

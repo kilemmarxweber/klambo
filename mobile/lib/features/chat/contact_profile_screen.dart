@@ -54,12 +54,52 @@ class _ContactProfileScreenState extends ConsumerState<ContactProfileScreen> {
   @override
   void initState() {
     super.initState();
-    _phone = _phoneFrom(widget.telephone);
+    _phone = _immediatePhone();
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadPhone());
+  }
+
+  /// Numéro du compte, sinon un numéro collé au prénom ou au nom,
+  /// sans attendre l'annuaire.
+  String? _immediatePhone() {
+    return _phoneFrom(widget.telephone) ??
+        findPhoneInText(widget.prenom) ??
+        findPhoneInText(widget.name);
   }
 
   String? _phoneFrom(dynamic source) {
     return accountTelephone(source) ?? extractPhoneNumber(source);
+  }
+
+  /// Même prénom et même nom que la fiche, même si l'id annuaire diffère.
+  String? _phoneMatchingName(Map data) {
+    final items = data["items"];
+    if (items is! List) return null;
+    final wantFirst = personPrenom(widget.prenom).toLowerCase();
+    final wantLast = personNom(
+      prenom: widget.prenom,
+      nom: widget.name,
+      name: widget.name,
+    ).toLowerCase();
+    if (wantFirst.isEmpty && wantLast.isEmpty) return null;
+    for (final raw in items) {
+      if (raw is! Map) continue;
+      final first = personPrenom(raw["prenom"]?.toString()).toLowerCase();
+      final last = personNom(
+        prenom: raw["prenom"]?.toString(),
+        nom: raw["nom"]?.toString(),
+        name: raw["name"]?.toString(),
+      ).toLowerCase();
+      final sameFirst = wantFirst.isNotEmpty && first == wantFirst;
+      final sameLast = wantLast.isNotEmpty && last == wantLast;
+      if (wantFirst.isNotEmpty && wantLast.isNotEmpty) {
+        if (!sameFirst || !sameLast) continue;
+      } else if (!sameFirst && !sameLast) {
+        continue;
+      }
+      final found = _phoneFrom(raw);
+      if (found != null) return found;
+    }
+    return null;
   }
 
   Future<void> _loadPhone() async {
@@ -74,8 +114,8 @@ class _ContactProfileScreenState extends ConsumerState<ContactProfileScreen> {
       String? found;
       try {
         final direct = await repo.contact(orgId, userId);
-        final item = direct["item"];
-        found = _phoneFrom(item is Map ? item : direct);
+        found = phoneFromApiPayload(direct, userId: userId) ??
+            _phoneMatchingName(direct);
       } catch (_) {}
       if (found == null) {
         final queries = <String>[
@@ -84,14 +124,8 @@ class _ContactProfileScreenState extends ConsumerState<ContactProfileScreen> {
         ];
         for (final query in queries) {
           final data = await repo.searchRecipients(orgId, query: query);
-          final items = (data["items"] as List?) ?? const [];
-          for (final raw in items) {
-            if (raw is! Map) continue;
-            final id = raw["userId"]?.toString() ?? raw["id"]?.toString();
-            if (id != userId) continue;
-            found = _phoneFrom(raw);
-            if (found != null) break;
-          }
+          found = phoneFromApiPayload(data, userId: userId) ??
+              _phoneMatchingName(data);
           if (found != null) break;
         }
       }

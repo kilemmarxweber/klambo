@@ -3,6 +3,7 @@ import "dart:async";
 import "package:audioplayers/audioplayers.dart";
 import "package:cached_network_image/cached_network_image.dart";
 import "package:flutter/foundation.dart" show kIsWeb;
+import "package:flutter/gestures.dart";
 import "package:flutter/material.dart";
 import "package:flutter/services.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
@@ -543,8 +544,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           telephone: isPeer
               ? (accountTelephone(msg) ??
                   widget.peerTelephone ??
+                  extractPhoneNumber(msg) ??
+                  findPhoneInText(widget.title) ??
                   msg["senderTelephone"]?.toString())
               : (accountTelephone(msg) ??
+                  extractPhoneNumber(msg) ??
+                  findPhoneInText(_messageSenderLabel(msg)) ??
                   msg["senderTelephone"]?.toString()),
           roleLabel: isPeer
               ? widget.peerRoleLabel
@@ -1407,6 +1412,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Future<void> _startCall({String kind = "AUDIO"}) async {
+    if (_calling) return;
     final peerId = widget.peerUserId;
     final hub = ref.read(callHubProvider);
     final l10n = ref.read(l10nProvider);
@@ -1658,41 +1664,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       }
                       final callTrace =
                           deleted ? null : CallTraceInfo.tryParse(body);
-                      if (callTrace != null) {
-                        return _SwipeToReply(
-                          enabled: !deleted &&
-                              !_selectionMode &&
-                              !_composerBlocked &&
-                              msgId.isNotEmpty,
-                          onReply: () => _selectMessageForReply(msg),
-                          child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: GestureDetector(
-                            onLongPress: () =>
-                                _onMessageLongPress(msg, mine),
-                            onTap: _selectionMode
-                                ? () => _onMessageLongPress(msg, mine)
-                                : null,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                _CallTraceChip(
-                                  info: callTrace,
-                                  time: formatMessageTime(
-                                    msg["createdAt"]?.toString(),
-                                  ),
-                                ),
-                                if (!_selectionMode)
-                                  _MessageMenuButton(
-                                    onTap: () =>
-                                        _onMessageLongPress(msg, mine),
-                                  ),
-                              ],
-                            ),
-                          ),
-                          ),
-                        );
-                      }
                       final replyTo = msg["replyTo"];
                       final replyDeleted = replyTo is Map &&
                           replyTo["deletedAt"] != null;
@@ -1712,7 +1683,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               _onMessageLongPress(msg, mine),
                           onTap: _selectionMode
                               ? () => _onMessageLongPress(msg, mine)
-                              : null,
+                              : (callTrace != null
+                                  ? () => _startCall(
+                                        kind: callTrace.isVideo
+                                            ? "VIDEO"
+                                            : "AUDIO",
+                                      )
+                                  : null),
                           child: Row(
                             crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
@@ -1780,7 +1757,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                   clusterTop: !sameAsOlder,
                                   clusterBottom: !sameAsNewer,
                                   attachments:
-                                      deleted ? const [] : attachments,
+                                      deleted || callTrace != null
+                                          ? const []
+                                          : attachments,
+                                  call: callTrace,
                                   showMenuButton: !_selectionMode,
                                   onMenuTap: () =>
                                       _onMessageLongPress(msg, mine),
@@ -1890,57 +1870,63 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 }
 
-class _CallTraceChip extends StatelessWidget {
-  const _CallTraceChip({required this.info, required this.time});
+/// Carte d'appel dans la bulle : icône, titre, sous-titre.
+class _CallMessageCard extends StatelessWidget {
+  const _CallMessageCard({required this.info, required this.textColor});
 
   final CallTraceInfo info;
-  final String time;
+  final Color textColor;
 
   @override
   Widget build(BuildContext context) {
     final missed = info.isMissedLike;
-    return Center(
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.06),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                info.isVideo
-                    ? (missed
-                        ? Icons.videocam_off_outlined
-                        : Icons.videocam_outlined)
-                    : (missed ? Icons.call_end : Icons.call),
-                size: 14,
-                color: missed ? Colors.red.shade700 : EteyeloColors.primaryDark,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                info.label,
-                style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w600,
-                  color: missed ? Colors.red.shade700 : const Color(0xFF3B4A54),
-                ),
-              ),
-              if (time.isNotEmpty) ...[
-                const SizedBox(width: 6),
+    final accent = missed ? const Color(0xFFE53935) : const Color(0xFF1FA855);
+    final icon = info.isVideo
+        ? (missed ? Icons.videocam_off_rounded : Icons.videocam_rounded)
+        : (missed ? Icons.call_end_rounded : Icons.call_rounded);
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Row(
+        children: [
+          DecoratedBox(
+            decoration: BoxDecoration(color: accent, shape: BoxShape.circle),
+            child: SizedBox(
+              width: 38,
+              height: 38,
+              child: Icon(icon, color: Colors.white, size: 20),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
                 Text(
-                  time,
+                  info.headline,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14.5,
+                    height: 1.2,
+                    fontWeight: FontWeight.w600,
+                    color: textColor,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  info.caption,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                    fontSize: 10.5,
+                    fontSize: 12.5,
+                    height: 1.2,
                     color: EteyeloColors.bubbleMeta,
                   ),
                 ),
               ],
-            ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -2248,6 +2234,7 @@ class _MessageBubble extends StatelessWidget {
     this.showMenuButton = true,
     this.onMenuTap,
     this.onAvatarTap,
+    this.call,
   });
 
   final String body;
@@ -2271,6 +2258,7 @@ class _MessageBubble extends StatelessWidget {
   final bool showMenuButton;
   final VoidCallback? onMenuTap;
   final VoidCallback? onAvatarTap;
+  final CallTraceInfo? call;
 
   bool get _isPlaceholderBody {
     final t = body.trim().toLowerCase();
@@ -2301,7 +2289,9 @@ class _MessageBubble extends StatelessWidget {
       return raw > maxInner ? maxInner : raw;
     }
 
-    if (!_isPlaceholderBody || attachments.isEmpty) {
+    if (call != null) {
+      grow(228);
+    } else if (!_isPlaceholderBody || attachments.isEmpty) {
       grow(lineWidth(body, 9.0));
     }
     if (showSenderName && senderName.isNotEmpty) {
@@ -2500,7 +2490,9 @@ class _MessageBubble extends StatelessWidget {
                   maxWidth: maxW - 24,
                 ),
               ),
-          if (!_isPlaceholderBody || attachments.isEmpty)
+          if (call != null)
+            _CallMessageCard(info: call!, textColor: textColor)
+          else if (!_isPlaceholderBody || attachments.isEmpty)
             LinkifiedText(
               text: body,
               enabled: !deleted,

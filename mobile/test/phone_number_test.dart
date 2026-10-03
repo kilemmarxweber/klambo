@@ -34,6 +34,41 @@ void main() {
     );
   });
 
+  test("lit le téléphone du user dans items, à côté du rôle", () {
+    expect(
+      phoneFromApiPayload(
+        {
+          "items": [
+            {
+              "prenom": "Obed",
+              "nom": "Tshimanga",
+              "roleLabel": "Support établissement",
+              "user": {"id": "u1", "telephone": "+243844952966"},
+            },
+          ],
+        },
+        userId: "u1",
+      ),
+      "+243844952966",
+    );
+    expect(
+      phoneFromApiPayload(
+        {
+          "items": [
+            {
+              "userId": "u1",
+              "prenom": "Obed",
+              "roleLabel": "Support établissement",
+              "phoneNumber": "+243 811 727 829",
+            },
+          ],
+        },
+        userId: "u1",
+      ),
+      "+243811727829",
+    );
+  });
+
   test("lit le numéro dans le prénom quand le champ téléphone est vide", () {
     expect(
       extractPhoneNumber({

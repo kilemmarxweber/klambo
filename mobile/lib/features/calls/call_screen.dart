@@ -226,6 +226,14 @@ class _CallScreenState extends ConsumerState<CallScreen> {
           label: _c.micMuted ? l10n.callMute : l10n.callMic,
           onTap: _actionBusy ? null : () => _safeAction(() => _c.toggleMute()),
         ),
+        _roundBtn(
+          color: _c.speakerOn ? const Color(0xFF0B6E4F) : Colors.white24,
+          icon: _c.speakerOn ? Icons.volume_up : Icons.volume_down,
+          label: l10n.callSpeaker,
+          onTap: _actionBusy
+              ? null
+              : () => _safeAction(() => _c.toggleSpeaker()),
+        ),
         if (_c.active?.kind == "VIDEO")
           _roundBtn(
             color: Colors.white24,

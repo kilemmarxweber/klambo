@@ -45,6 +45,56 @@ String? accountTelephone(dynamic source) {
   return null;
 }
 
+/// Réponse annuaire : `{ item }` ou `{ items: [...] }`, téléphone sur l'objet ou sur `user`.
+String? phoneFromApiPayload(dynamic data, {String? userId}) {
+  if (data is! Map) return accountTelephone(data) ?? extractPhoneNumber(data);
+  final map = Map<String, dynamic>.from(data);
+
+  String? fromRecord(Map raw) {
+    if (userId != null && userId.isNotEmpty && !_recordIsUser(raw, userId)) {
+      return null;
+    }
+    return accountTelephone(raw) ?? extractPhoneNumber(raw);
+  }
+
+  for (final key in ["item", "recipient", "user", "profile"]) {
+    final nested = map[key];
+    if (nested is Map) {
+      final found = fromRecord(Map<String, dynamic>.from(nested));
+      if (found != null) return found;
+    }
+  }
+
+  final items = map["items"] ?? map["recipients"] ?? map["users"];
+  if (items is List) {
+    String? only;
+    var count = 0;
+    for (final raw in items) {
+      if (raw is! Map) continue;
+      count++;
+      final record = Map<String, dynamic>.from(raw);
+      final found = fromRecord(record);
+      if (found != null) return found;
+      only ??= accountTelephone(record) ?? extractPhoneNumber(record);
+    }
+    if (count == 1) return only;
+  }
+
+  return fromRecord(map);
+}
+
+bool _recordIsUser(Map raw, String userId) {
+  final ids = <String>[
+    raw["userId"]?.toString() ?? "",
+    raw["id"]?.toString() ?? "",
+  ];
+  final user = raw["user"];
+  if (user is Map) ids.add(user["id"]?.toString() ?? "");
+  final known = ids.where((id) => id.isNotEmpty).toList();
+  if (known.isEmpty) return true;
+  return known.contains(userId);
+}
+
 /// Affiche `+243844952966`.
 String formatAccountPhone(String phone) {
   var kept = phone.replaceAll(RegExp(r"[^\d+]"), "");
@@ -94,6 +144,8 @@ const _phoneKeyNames = {
   "msisdn",
   "e164",
   "phonee164",
+  "telephonenumber",
+  "phonenumbers",
 };
 
 const _identityKeys = [
@@ -103,8 +155,12 @@ const _identityKeys = [
   "title",
   "displayName",
   "fullName",
+  "lastName",
+  "postnom",
   "senderName",
   "senderPrenom",
+  "senderNom",
+  "senderPostnom",
 ];
 
 /// Numéro présent dans un texte, même collé à un nom.

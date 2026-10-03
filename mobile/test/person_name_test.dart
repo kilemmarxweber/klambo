@@ -49,5 +49,14 @@ void main() {
       displayPersonName(name: "Elysee ngolo ndoy"),
       "Elysee ngolo",
     );
+    expect(
+      displayPersonName(
+        prenom: "+243 811 727 829",
+        name: "Kanzal",
+      ),
+      "Kanzal",
+    );
+    expect(personPrenom("+243 811 727 829"), "");
+    expect(personNom(prenom: "yannick", nom: "kilem"), "kilem");
   });
 }

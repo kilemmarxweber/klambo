@@ -2,7 +2,7 @@ import "package:flutter/material.dart";
 import "package:klambo_messagerie/core/app_theme.dart";
 import "package:klambo_messagerie/core/wallpaper_prefs.dart";
 
-/// Fond de discussion : une seule couleur, emojis en filigrane de la même teinte.
+/// Fond de discussion : une seule couleur, motifs en trait de la même teinte.
 class ChatWallpaper extends StatelessWidget {
   const ChatWallpaper({super.key, this.style});
 
@@ -15,22 +15,29 @@ class ChatWallpaper extends StatelessWidget {
     return baseOf(value, dark: dark);
   }
 
+  /// Le fond Android reste sombre, même si le thème de l’app est clair.
+  static bool surfaceDark(WallpaperStyle style, {required bool dark}) {
+    return style == WallpaperStyle.android || dark;
+  }
+
   static Color baseOf(WallpaperStyle style, {required bool dark}) {
+    final useDark = surfaceDark(style, dark: dark);
     return switch (style) {
       WallpaperStyle.plain ||
       WallpaperStyle.messages ||
       WallpaperStyle.android ||
       WallpaperStyle.mix =>
-        dark ? EteyeloColors.chatBackgroundDark : EteyeloColors.chatBackground,
+        useDark ? EteyeloColors.chatBackgroundDark : EteyeloColors.chatBackground,
     };
   }
 
-  /// Encre du filigrane : même teinte que le fond, un cran plus marquée.
+  /// Encre du filigrane : trait clair sur fond sombre, trait sombre sur fond clair.
   static Color watermarkOf(WallpaperStyle style, {required bool dark}) {
     if (style == WallpaperStyle.plain) return const Color(0x00000000);
-    final base = baseOf(style, dark: dark);
-    final ink = dark ? Colors.white : const Color(0xFF6B6258);
-    return Color.alphaBlend(ink.withValues(alpha: dark ? 0.20 : 0.28), base);
+    if (surfaceDark(style, dark: dark)) {
+      return Colors.white.withValues(alpha: 0.22);
+    }
+    return const Color(0xFF5C534C).withValues(alpha: 0.28);
   }
 
   @override
@@ -45,55 +52,82 @@ class ChatWallpaper extends StatelessWidget {
   }
 
   Widget _paint(BuildContext context, WallpaperStyle value) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
+    final dark = surfaceDark(
+      value,
+      dark: Theme.of(context).brightness == Brightness.dark,
+    );
     final base = baseOf(value, dark: dark);
     if (value == WallpaperStyle.plain) {
       return ColoredBox(color: base, child: const SizedBox.expand());
     }
-    final ink = watermarkOf(value, dark: dark);
     return ColoredBox(
       color: base,
       child: IgnorePointer(
-        child: ColorFiltered(
-          colorFilter: ColorFilter.mode(ink, BlendMode.srcIn),
-          child: _EmojiField(style: value),
+        child: _DoodleField(
+          style: value,
+          color: watermarkOf(value, dark: dark),
         ),
       ),
     );
   }
 }
 
-class _EmojiField extends StatelessWidget {
-  const _EmojiField({required this.style});
+class _DoodleField extends StatelessWidget {
+  const _DoodleField({required this.style, required this.color});
 
   final WallpaperStyle style;
+  final Color color;
 
-  static const _size = 18.0;
-  static const _step = 46.0;
-  static const _fonts = [
-    "Segoe UI Emoji",
-    "Apple Color Emoji",
-    "Noto Color Emoji",
-    "Noto Emoji",
+  static const _step = 52.0;
+
+  static const _messages = <IconData>[
+    Icons.chat_bubble_outline,
+    Icons.phone_outlined,
+    Icons.mail_outline,
+    Icons.photo_camera_outlined,
+    Icons.favorite_border,
+    Icons.mic_none_outlined,
+    Icons.attach_file,
+    Icons.emoji_emotions_outlined,
+    Icons.sticky_note_2_outlined,
+    Icons.groups_outlined,
   ];
 
-  static const _messages = [
-    "💬", "✉️", "📱", "📞", "💌", "📲", "💭", "📧",
-    "🗨️", "☎️", "📩", "📨", "📝", "💜", "💙", "📎",
+  static const _android = <IconData>[
+    Icons.phone_android,
+    Icons.settings_outlined,
+    Icons.notifications_none,
+    Icons.battery_std,
+    Icons.wifi,
+    Icons.videocam_outlined,
+    Icons.sports_esports_outlined,
+    Icons.headphones,
   ];
 
-  static const _android = [
-    "🤖", "📱", "💚", "🔔", "🕹️", "⚙️", "📲", "💻",
-    "🔋", "📡", "🟢", "📳", "🔌", "📟", "🖱️", "🤖",
+  static const _mix = <IconData>[
+    Icons.chat_bubble_outline,
+    Icons.phone_outlined,
+    Icons.photo_camera_outlined,
+    Icons.favorite_border,
+    Icons.videocam_outlined,
+    Icons.image_outlined,
+    Icons.mic_none_outlined,
+    Icons.location_on_outlined,
+    Icons.emoji_emotions_outlined,
+    Icons.headphones_outlined,
+    Icons.music_note_outlined,
+    Icons.mail_outline,
+    Icons.shopping_bag_outlined,
+    Icons.local_cafe_outlined,
+    Icons.attach_file,
+    Icons.cake_outlined,
+    Icons.thumb_up_alt_outlined,
+    Icons.flight_outlined,
+    Icons.pets_outlined,
+    Icons.wb_sunny_outlined,
   ];
 
-  static const _mix = [
-    "💬", "🤖", "✉️", "📷", "✨", "💙", "📎", "⭐",
-    "📱", "🎉", "❤️", "😂", "👍", "🌈", "🔥", "☕",
-    "🌙", "🌸", "🎯", "🎵", "📍", "🌟", "📞", "💚",
-  ];
-
-  List<String> get _emojis => switch (style) {
+  List<IconData> get _icons => switch (style) {
         WallpaperStyle.plain => const [],
         WallpaperStyle.messages => _messages,
         WallpaperStyle.android => _android,
@@ -102,8 +136,8 @@ class _EmojiField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final emojis = _emojis;
-    if (emojis.isEmpty) return const SizedBox.expand();
+    final icons = _icons;
+    if (icons.isEmpty) return const SizedBox.expand();
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
@@ -114,21 +148,16 @@ class _EmojiField extends StatelessWidget {
         final children = <Widget>[];
         var index = 0;
         var row = 0;
-        for (var y = 0.0; y < height; y += _step) {
+        for (var y = 4.0; y < height; y += _step) {
           final shift = row.isOdd ? _step / 2 : 0.0;
           for (var x = -_step / 2; x < width; x += _step) {
+            final icon = icons[index % icons.length];
+            final size = 18.0 + (index % 3) * 2;
             children.add(
               Positioned(
                 left: x + shift,
                 top: y,
-                child: Text(
-                  emojis[index % emojis.length],
-                  style: const TextStyle(
-                    fontSize: _size,
-                    height: 1,
-                    fontFamilyFallback: _fonts,
-                  ),
-                ),
+                child: Icon(icon, size: size, color: color),
               ),
             );
             index++;

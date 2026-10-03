@@ -211,9 +211,9 @@ class L10n {
   String get wallpaperTitle =>
       _t("Fond d’écran", "Wallpaper", "Fundo");
   String get wallpaperHint => _t(
-        "Motif simple derrière les messages",
-        "Simple pattern behind messages",
-        "Padrão simples atrás das mensagens",
+        "Motif en trait, même teinte que le fond",
+        "Line pattern, same tone as the background",
+        "Padrão em traço, o mesmo tom do fundo",
       );
   String get wallpaperPlain =>
       _t("Uni", "Plain", "Liso");
@@ -420,6 +420,7 @@ class L10n {
   String get callAccept => _t("Accepter", "Accept", "Aceitar");
   String get callMute => _t("Muet", "Muted", "Mudo");
   String get callMic => _t("Micro", "Mic", "Micro");
+  String get callSpeaker => _t("Haut-parleur", "Speaker", "Altifalante");
   String get callCamera => _t("Caméra", "Camera", "Câmara");
   String get callHangup => _t("Raccrocher", "Hang up", "Desligar");
 }
