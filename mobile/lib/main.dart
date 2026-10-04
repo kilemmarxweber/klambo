@@ -92,6 +92,10 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
           userId: hub.localUserId,
         ));
       }
+      // Après pause/hidden, minimizeCall a retiré /call : rouvrir si l'appel vit.
+      if (!hub.controller.isDisposed && hub.controller.isBusy) {
+        hub.showCallScreen();
+      }
     }
     // Accueil, autre appli ou écran verrouillé : on détache la vidéo
     // tout de suite. Sinon la surface WebRTC fige l'activité.
