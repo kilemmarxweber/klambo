@@ -47,6 +47,15 @@ void main() {
     expect(link.onIce(CallIceSignal.failed), CallLinkAction.endFailed);
   });
 
+  test("après le média, la fermeture du lien termine l'appel", () {
+    final link = CallLink();
+    expect(link.onIce(CallIceSignal.closed), CallLinkAction.none);
+    link.hadMedia = true;
+    link.mediaUp = true;
+    expect(link.onIce(CallIceSignal.closed), CallLinkAction.endFailed);
+    expect(link.mediaUp, isFalse);
+  });
+
   test("un succès autorise une nouvelle reprise plus tard", () {
     final link = CallLink();
     expect(link.onIce(CallIceSignal.connected), CallLinkAction.mediaUp);

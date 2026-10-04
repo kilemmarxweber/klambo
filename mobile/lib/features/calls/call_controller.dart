@@ -70,6 +70,7 @@ class CallController extends ChangeNotifier {
   /// host, srflx, relay ou unknown — renseigné pendant l'appel.
   String icePath = "unknown";
   final List<RTCIceCandidate> _pendingRemoteIce = [];
+  final List<Map<String, dynamic>> _pendingLocalIce = [];
   final Set<String> _appliedRemoteIce = {};
   bool _answerApplied = false;
   Timer? _offerResendTimer;
@@ -143,27 +144,18 @@ class CallController extends ChangeNotifier {
 
     _pc!.onIceCandidate = (candidate) {
       if (_disposed || _ending) return;
-      if (candidate.candidate == null || active == null) return;
-      final payload = {
-        "candidate": candidate.candidate,
+      final value = candidate.candidate;
+      if (value == null || value.isEmpty) return;
+      _sendLocalIce({
+        "candidate": value,
         "sdpMid": candidate.sdpMid,
         "sdpMLineIndex": candidate.sdpMLineIndex,
-      };
-      _socket.sendCallSignal(
-        type: "call.ice",
-        organizationId: active!.organizationId,
-        callId: active!.callId,
-        toUserId: active!.peerUserId,
-        fromUserId: localUserId,
-        payload: payload,
-      );
-      if (persistIceOnRest(socketConnected: _socket.isConnected)) {
-        unawaited(_postSignal("ice", payload));
-      }
+      });
     };
 
     _pc!.onTrack = (event) {
       if (_disposed || _ending) return;
+      event.track.onEnded = _onRemoteMediaGone;
       if (event.streams.isNotEmpty) {
         remoteRenderer.srcObject = event.streams[0];
         unawaited(_applyAudioRoute());
@@ -171,11 +163,16 @@ class CallController extends ChangeNotifier {
       }
     };
 
+    _pc!.onRemoveTrack = (_, __) {
+      _onRemoteMediaGone();
+    };
+
     // ICE connection state drives media-up / restart / fail (CallLink).
     // PeerConnection state is a separate aggregate — do not feed it through
     // parseIceSignal / _onLinkSignal (duplicate transitions + wrong restarts).
     _pc!.onIceConnectionState = (state) {
       if (_disposed || _ending) return;
+      debugPrint("[call] ice=$state phase=$phase");
       _onLinkSignal(parseIceSignal(state.toString()));
     };
 
@@ -282,17 +279,67 @@ class CallController extends ChangeNotifier {
         _ensureStats();
         break;
       case CallLinkAction.scheduleRestart:
+      case CallLinkAction.restartNow:
+      case CallLinkAction.endFailed:
+        unawaited(_recoverOrEnd(action));
+        break;
+      case CallLinkAction.none:
+        break;
+    }
+  }
+
+  /// Coupure après un appel déjà établi : si le pair a raccroché, on termine
+  /// tout de suite. Sinon on reprend le lien.
+  Future<void> _recoverOrEnd(CallLinkAction action) async {
+    if (await _remoteCallEnded()) {
+      if (_disposed || _ending) return;
+      _cancelLinkTimers();
+      _link.disarm();
+      debugPrint("[call] pair a raccroché, fin locale");
+      await endLocal(reason: "hangup");
+      return;
+    }
+    if (_disposed || _ending) return;
+    switch (action) {
+      case CallLinkAction.scheduleRestart:
         _armRestart(CallLink.disconnectGrace);
         break;
       case CallLinkAction.restartNow:
         _armRestart(Duration.zero);
         break;
       case CallLinkAction.endFailed:
-        unawaited(endLocal(reason: "failed", notifyPeer: true));
+        await endLocal(reason: "failed", notifyPeer: true);
         break;
       case CallLinkAction.none:
+      case CallLinkAction.mediaUp:
         break;
     }
+  }
+
+  Future<bool> _remoteCallEnded() async {
+    final call = active;
+    if (call == null || _disposed || _ending) return false;
+    try {
+      final data = await _calls.callSignal(
+        organizationId: call.organizationId,
+        callId: call.callId,
+      );
+      if (_disposed || active?.callId != call.callId) return false;
+      return remoteCallFinished(data["status"]?.toString());
+    } catch (e) {
+      debugPrint("[call] statut pair: $e");
+      return false;
+    }
+  }
+
+  void _onRemoteMediaGone() {
+    if (_disposed || _ending || !_link.hadMedia || _link.restartInFlight) {
+      return;
+    }
+    debugPrint("[call] média distant coupé");
+    _cancelLinkTimers();
+    _link.disarm();
+    unawaited(endLocal(reason: "hangup", notifyPeer: true));
   }
 
   void _armRestart(Duration delay) {
@@ -620,6 +667,7 @@ class CallController extends ChangeNotifier {
       }
       _startOfferResend();
       _startRingTimeout();
+      _flushLocalIce();
 
       _safeNotify();
     } catch (e) {
@@ -884,13 +932,10 @@ class CallController extends ChangeNotifier {
     if (_disposed || _ending || active?.callId != call.callId) return;
 
     final status = data["status"]?.toString() ?? "";
-    if (status == "REJECTED" || status == "ENDED" || status == "MISSED") {
-      if (phase == CallPhase.ringingIn ||
-          phase == CallPhase.ringingOut ||
-          phase == CallPhase.connecting) {
-        final endReason = data["endReason"]?.toString();
-        await endLocal(reason: endReason == "busy" ? "busy" : status);
-      }
+    if (remoteCallFinished(status)) {
+      final endReason = data["endReason"]?.toString();
+      debugPrint("[call] appel $status côté serveur, fin locale");
+      await endLocal(reason: endReason == "busy" ? "busy" : status);
       return;
     }
 
@@ -1088,13 +1133,6 @@ class CallController extends ChangeNotifier {
     final call = active;
     if (call == null || _ending || _disposed) return;
     try {
-      await _calls.callAction(
-        organizationId: call.organizationId,
-        callId: call.callId,
-        action: "hangup",
-      );
-    } catch (_) {}
-    try {
       _socket.sendCallSignal(
         type: "call.hangup",
         organizationId: call.organizationId,
@@ -1102,8 +1140,17 @@ class CallController extends ChangeNotifier {
         toUserId: call.peerUserId,
         fromUserId: localUserId,
       );
+      debugPrint("[call] hangup envoyé à ${call.peerUserId}");
     } catch (_) {}
+    final saved = _calls.callAction(
+      organizationId: call.organizationId,
+      callId: call.callId,
+      action: "hangup",
+    );
     await endLocal(reason: "hangup");
+    try {
+      await saved;
+    } catch (_) {}
   }
 
   Future<void> endLocal({String? reason, bool notifyPeer = false}) async {
@@ -1269,8 +1316,41 @@ class CallController extends ChangeNotifier {
         break;
       case "call.reject":
       case "call.hangup":
+        debugPrint("[call] $type reçu de ${event["fromUserId"]}");
+        _cancelLinkTimers();
+        _link.disarm();
         await endLocal(reason: type);
         break;
+    }
+  }
+
+  void _sendLocalIce(Map<String, dynamic> payload) {
+    final call = active;
+    if (call == null) {
+      _pendingLocalIce.add(payload);
+      debugPrint("[call] ice local en attente (pas encore d'id)");
+      return;
+    }
+    _socket.sendCallSignal(
+      type: "call.ice",
+      organizationId: call.organizationId,
+      callId: call.callId,
+      toUserId: call.peerUserId,
+      fromUserId: localUserId,
+      payload: payload,
+    );
+    if (persistIceOnRest(socketConnected: _socket.isConnected)) {
+      unawaited(_postSignal("ice", payload));
+    }
+  }
+
+  void _flushLocalIce() {
+    if (active == null || _pendingLocalIce.isEmpty) return;
+    final queued = List<Map<String, dynamic>>.from(_pendingLocalIce);
+    _pendingLocalIce.clear();
+    debugPrint("[call] envoi ${queued.length} candidats ICE en attente");
+    for (final payload in queued) {
+      _sendLocalIce(payload);
     }
   }
 
@@ -1322,6 +1402,7 @@ class CallController extends ChangeNotifier {
     } catch (_) {}
     _pc = null;
     _pendingRemoteIce.clear();
+    _pendingLocalIce.clear();
     _appliedRemoteIce.clear();
     _answerApplied = false;
     _incomingSdp = null;

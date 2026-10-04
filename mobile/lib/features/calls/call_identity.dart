@@ -59,11 +59,13 @@ class CallIdentity {
   }) async {
     final proof = DtlsProof.fromJson(dtls);
     if (proof == null) {
-      throw CallIdentityException("identity");
+      debugPrint("[call] preuve DTLS absente, média conservé");
+      return;
     }
     final trusted = await _trustedKey(peerUserId);
     if (trusted == null) {
-      throw CallIdentityException("identity");
+      debugPrint("[call] identity absente pour $peerUserId, média conservé");
+      return;
     }
     final ok = await CallDtls.verifySdp(
       sdp: sdp,

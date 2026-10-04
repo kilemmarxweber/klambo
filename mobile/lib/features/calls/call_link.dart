@@ -62,8 +62,11 @@ class CallLink {
         if (restartInFlight) return CallLinkAction.none;
         if (restartAttempts >= maxRestarts) return CallLinkAction.endFailed;
         return CallLinkAction.restartNow;
-      case CallIceSignal.checking:
       case CallIceSignal.closed:
+        if (!hadMedia) return CallLinkAction.none;
+        mediaUp = false;
+        return CallLinkAction.endFailed;
+      case CallIceSignal.checking:
       case CallIceSignal.other:
         return CallLinkAction.none;
     }

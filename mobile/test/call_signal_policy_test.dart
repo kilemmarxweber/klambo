@@ -28,6 +28,15 @@ void main() {
     );
   });
 
+  test("un appel terminé côté serveur doit couper l'autre téléphone", () {
+    expect(remoteCallFinished("ENDED"), isTrue);
+    expect(remoteCallFinished("REJECTED"), isTrue);
+    expect(remoteCallFinished("MISSED"), isTrue);
+    expect(remoteCallFinished("ACTIVE"), isFalse);
+    expect(remoteCallFinished("RINGING"), isFalse);
+    expect(remoteCallFinished(null), isFalse);
+  });
+
   test("décrocher depuis la notif attend que l'appel sonne", () {
     expect(
       shouldAutoAcceptNative(requested: true, ringingIn: true),

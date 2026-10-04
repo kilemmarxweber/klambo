@@ -25,6 +25,18 @@ Duration? callFallbackDelay({
 bool shouldResendOffer({required bool acked, required bool ringingOut}) =>
     ringingOut && !acked;
 
+/// Le pair a déjà terminé l'appel côté serveur (raccroché, refusé, manqué).
+bool remoteCallFinished(String? status) {
+  switch (status) {
+    case "ENDED":
+    case "REJECTED":
+    case "MISSED":
+      return true;
+    default:
+      return false;
+  }
+}
+
 /// Décrocher depuis la notif seulement si l'appel sonne encore.
 /// Le PeerConnection est créé ensuite par `acceptIncoming`.
 bool shouldAutoAcceptNative({
