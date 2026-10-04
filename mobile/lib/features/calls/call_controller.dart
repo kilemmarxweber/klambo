@@ -116,19 +116,18 @@ class CallController extends ChangeNotifier {
   /// Le décompte vit ici : réduire l'écran ne le remet pas à zéro.
   void _syncCallClock() {
     if (phase == CallPhase.active || phase == CallPhase.connecting) {
-      if (phase == CallPhase.active) {
-        _callStartedAt ??= DateTime.now();
-      }
-      if (_callStartedAt != null) {
-        callElapsed = DateTime.now().difference(_callStartedAt!);
-      }
+      // Démarrer dès connecting pour ne pas perdre le temps ICE / handshake.
+      _callStartedAt ??= DateTime.now();
+      callElapsed = DateTime.now().difference(_callStartedAt!);
       _callClock ??= Timer.periodic(const Duration(seconds: 1), (_) {
         if (_disposed || _callStartedAt == null) return;
         if (phase != CallPhase.active && phase != CallPhase.connecting) {
           return;
         }
         callElapsed = DateTime.now().difference(_callStartedAt!);
-        if (phase == CallPhase.active) _safeNotify();
+        if (phase == CallPhase.active || phase == CallPhase.connecting) {
+          _safeNotify();
+        }
       });
       return;
     }

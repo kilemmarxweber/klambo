@@ -6,7 +6,8 @@ import "package:flutter/services.dart";
 import "package:klambo_messagerie/core/alert_prefs.dart";
 
 /// Sons in-app : bip message, sonnerie reçue, bip d'appel lancé.
-/// B (entrant) : sonnerie des réglages Android. A (sortant) : bip continu.
+/// B (entrant) : sonnerie Android si possible, sinon asset WAV (+ cue).
+/// A (sortant) : bip asset en boucle (+ cue si échec).
 class SoundService {
   SoundService._();
   static final SoundService instance = SoundService._();
@@ -160,8 +161,8 @@ class SoundService {
     }
   }
 
-  /// [incoming] : B reçoit l'appel (sonnerie des réglages).
-  /// Sinon A a lancé l'appel (bip continu).
+  /// [incoming] : B reçoit l'appel (sonnerie des réglages Android si dispo).
+  /// Sinon A a lancé l'appel (bip continu). iOS/web / fallback : asset WAV.
   Future<void> startRingtone({bool incoming = false}) async {
     if (!AlertPrefs.instance.soundsEnabled) return;
     if (_ringing) return;
@@ -184,31 +185,26 @@ class SoundService {
       }
     }
 
-    if (incoming) {
-      await _playSystemCue();
-      _ringFallbackTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-        if (!_ringing) return;
-        unawaited(_playSystemCue());
-        unawaited(HapticFeedback.lightImpact());
-      });
-      return;
-    }
-
     var assetOk = false;
     try {
       final p = await _ringPlayer();
       await p.stop();
       await p.setReleaseMode(ReleaseMode.loop);
-      await p.setVolume(0.85);
-      await p.play(AssetSource("sounds/ringtone.wav"), volume: 0.85);
+      final volume = incoming ? 1.0 : 0.85;
+      await p.setVolume(volume);
+      await p.play(AssetSource("sounds/ringtone.wav"), volume: volume);
       assetOk = true;
-      debugPrint("[sound] outgoing beep playing");
+      debugPrint(
+        incoming
+            ? "[sound] incoming ringtone asset playing"
+            : "[sound] outgoing beep playing",
+      );
     } catch (e) {
-      debugPrint("[sound] outgoing beep failed: $e");
+      debugPrint("[sound] ringtone asset failed: $e");
       await _resetRingPlayer();
     }
 
-    // Web / bureau : si l’asset échoue, répéter le bip système.
+    // Web / bureau / échec asset : répéter le bip système.
     if (!assetOk) {
       await _playSystemCue();
       _ringFallbackTimer = Timer.periodic(const Duration(seconds: 2), (_) {
