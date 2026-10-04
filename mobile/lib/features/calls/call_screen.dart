@@ -32,7 +32,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   }
 
   void _startClock() {
-    _connectedAt ??= DateTime.now();
+    _connectedAt ??= DateTime.now().subtract(_elapsed);
     _elapsed = DateTime.now().difference(_connectedAt!);
     _clock ??= Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted || _connectedAt == null) return;
@@ -42,9 +42,22 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     });
   }
 
-  void _stopClock() {
+  /// Arrête le tick. Conserve [_elapsed] pour reprendre au même temps
+  /// après un passage en `connecting` (redémarrage ICE).
+  void _pauseClock() {
+    if (_connectedAt != null) {
+      _elapsed = DateTime.now().difference(_connectedAt!);
+    }
+    _connectedAt = null;
     _clock?.cancel();
     _clock = null;
+  }
+
+  void _resetClock() {
+    _clock?.cancel();
+    _clock = null;
+    _connectedAt = null;
+    _elapsed = Duration.zero;
   }
 
   String get _clockLabel {
@@ -63,7 +76,9 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     if (_c.phase == CallPhase.active) {
       _startClock();
     } else if (_c.phase == CallPhase.idle || _c.phase == CallPhase.ended) {
-      _stopClock();
+      _resetClock();
+    } else {
+      _pauseClock();
     }
     if (_c.phase == CallPhase.idle) {
       _schedulePop();
@@ -102,7 +117,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
 
   @override
   void dispose() {
-    _stopClock();
+    _pauseClock();
     if (!_c.isDisposed) {
       _c.removeListener(_onUpdate);
     }

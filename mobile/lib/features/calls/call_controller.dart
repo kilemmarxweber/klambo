@@ -127,15 +127,31 @@ class CallController extends ChangeNotifier {
     _renderersReady = true;
   }
 
+  static const _fallbackIce = [
+    {"urls": "stun:stun.l.google.com:19302"},
+    {"urls": "stun:stun1.l.google.com:19302"},
+    {"urls": "stun:stun.cloudflare.com:3478"},
+  ];
+
   Future<List<Map<String, dynamic>>> _loadIce() async {
-    final conf = await _calls.iceServers();
-    final servers = conf["iceServers"];
-    if (servers is List) {
-      return servers.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    try {
+      final conf = await _calls.iceServers();
+      final servers = conf["iceServers"];
+      if (servers is List && servers.isNotEmpty) {
+        final parsed = servers.whereType<Map>().map((e) {
+          final map = Map<String, dynamic>.from(e);
+          final urls = map["urls"];
+          if (urls is List) {
+            map["urls"] = urls.map((u) => u.toString()).toList();
+          }
+          return map;
+        }).toList();
+        if (parsed.isNotEmpty) return parsed;
+      }
+    } catch (e) {
+      debugPrint("[call] ice-servers: $e");
     }
-    return [
-      {"urls": "stun:stun.l.google.com:19302"},
-    ];
+    return _fallbackIce.map((e) => Map<String, dynamic>.from(e)).toList();
   }
 
   Future<void> _ensurePeer(bool video) async {
