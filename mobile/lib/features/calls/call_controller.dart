@@ -78,6 +78,7 @@ class CallController extends ChangeNotifier {
   final List<Map<String, dynamic>> _pendingLocalIce = [];
   final Set<String> _appliedRemoteIce = {};
   bool _answerApplied = false;
+  bool _applyingAnswer = false;
   Timer? _offerResendTimer;
   DateTime? _historyFallbackAt;
   Timer? _ringTimeout;
@@ -251,16 +252,11 @@ class CallController extends ChangeNotifier {
 
     _pc!.onTrack = (event) {
       if (_disposed || _ending) return;
-      event.track.onEnded = _onRemoteMediaGone;
       if (event.streams.isNotEmpty) {
         remoteRenderer.srcObject = event.streams[0];
         unawaited(_applyAudioRoute());
         _safeNotify();
       }
-    };
-
-    _pc!.onRemoveTrack = (_, __) {
-      _onRemoteMediaGone();
     };
 
     // ICE connection state drives media-up / restart / fail (CallLink).
@@ -426,16 +422,6 @@ class CallController extends ChangeNotifier {
       debugPrint("[call] statut pair: $e");
       return false;
     }
-  }
-
-  void _onRemoteMediaGone() {
-    if (_disposed || _ending || !_link.hadMedia || _link.restartInFlight) {
-      return;
-    }
-    debugPrint("[call] média distant coupé");
-    _cancelLinkTimers();
-    _link.disarm();
-    unawaited(endLocal(reason: "hangup", notifyPeer: true));
   }
 
   void _armRestart(Duration delay) {
@@ -1036,6 +1022,48 @@ class CallController extends ChangeNotifier {
     }
   }
 
+  /// Une seule réponse à la fois : le socket et le REST en envoient souvent deux.
+  Future<void> _applyRemoteAnswer(
+    Map<String, dynamic> container, {
+    bool restart = false,
+  }) async {
+    if (_disposed || _ending || active == null || !active!.isCaller) return;
+    if (!restart && (_answerApplied || _applyingAnswer)) return;
+    final sdp = _sdpMap(container["sdp"]) ?? _sdpFromSignal(container);
+    if (sdp == null || _pc == null) return;
+    if (!restart) _applyingAnswer = true;
+    try {
+      if (!await _guard(active!.peerUserId, container)) {
+        if (!restart) _applyingAnswer = false;
+        return;
+      }
+      if (_disposed || _ending || _pc == null) return;
+      if (!restart && _answerApplied) return;
+      if (phase == CallPhase.ringingOut) {
+        phase = CallPhase.connecting;
+        _armConnectBudget();
+      }
+      await _pc!.setRemoteDescription(
+        RTCSessionDescription(
+          sdp["sdp"] as String,
+          sdp["type"] as String? ?? "answer",
+        ),
+      );
+      if (!restart) _answerApplied = true;
+      await _flushPendingIce();
+      phase = markActiveOnAnswer(mediaAlreadyUp: _link.mediaUp)
+          ? CallPhase.active
+          : CallPhase.connecting;
+      if (phase == CallPhase.connecting) _armConnectBudget();
+      _stopOfferResend();
+      _stopRingTimeout();
+      _safeNotify();
+    } catch (e) {
+      if (!restart && !_answerApplied) _applyingAnswer = false;
+      debugPrint("[call] answer apply failed: $e");
+    }
+  }
+
   /// Récupère réponse / ICE / fin d'appel quand le websocket n'a pas livré.
   Future<void> pullRemoteSignal() async {
     final call = active;
@@ -1060,35 +1088,10 @@ class CallController extends ChangeNotifier {
       return;
     }
 
-    if (call.isCaller && !_answerApplied) {
+    if (call.isCaller && !_answerApplied && !_applyingAnswer) {
       final answer = data["answer"];
-      final sdp = _sdpFromSignal(answer);
-      if (sdp != null && _pc != null) {
-        final container = answer is Map
-            ? Map<String, dynamic>.from(answer)
-            : <String, dynamic>{"sdp": sdp};
-        if (!await _guard(call.peerUserId, container)) return;
-        if (phase == CallPhase.ringingOut) {
-          phase = CallPhase.connecting;
-          _armConnectBudget();
-        }
-        await _pc!.setRemoteDescription(
-          RTCSessionDescription(
-            sdp["sdp"] as String,
-            sdp["type"] as String? ?? "answer",
-          ),
-        );
-        await _flushPendingIce();
-        _answerApplied = true;
-        if (markActiveOnAnswer(mediaAlreadyUp: _link.mediaUp)) {
-          phase = CallPhase.active;
-        } else {
-          phase = CallPhase.connecting;
-          _armConnectBudget();
-        }
-        _stopOfferResend();
-        _stopRingTimeout();
-        _safeNotify();
+      if (answer is Map && _pc != null) {
+        await _applyRemoteAnswer(Map<String, dynamic>.from(answer));
       }
     } else if (!call.isCaller && _incomingSdp == null) {
       _incomingSdp = _sdpFromSignal(data["offer"]);
@@ -1374,32 +1377,10 @@ class CallController extends ChangeNotifier {
     switch (type) {
       case "call.answer":
         final restart = p?["iceRestart"] == true;
-        if (active!.isCaller && p?["sdp"] is Map && (restart || !_answerApplied)) {
-          final sdp = Map<String, dynamic>.from(p!["sdp"] as Map);
-          if (!await _guard(active!.peerUserId, p)) return;
-          try {
-            if (phase == CallPhase.ringingOut) {
-              phase = CallPhase.connecting;
-              _armConnectBudget();
-            }
-            await _pc?.setRemoteDescription(
-              RTCSessionDescription(
-                sdp["sdp"] as String,
-                sdp["type"] as String? ?? "answer",
-              ),
-            );
-            if (!restart) _answerApplied = true;
-            await _flushPendingIce();
-            phase = markActiveOnAnswer(mediaAlreadyUp: _link.mediaUp)
-                ? CallPhase.active
-                : CallPhase.connecting;
-            if (phase == CallPhase.connecting) _armConnectBudget();
-            _stopOfferResend();
-            _stopRingTimeout();
-            _safeNotify();
-          } catch (e) {
-            debugPrint("[call] answer apply failed: $e");
-          }
+        if (active!.isCaller &&
+            p != null &&
+            (restart || (!_answerApplied && !_applyingAnswer))) {
+          await _applyRemoteAnswer(p, restart: restart);
         }
         break;
       case "call.renegotiate":
@@ -1531,6 +1512,7 @@ class CallController extends ChangeNotifier {
     _pendingLocalIce.clear();
     _appliedRemoteIce.clear();
     _answerApplied = false;
+    _applyingAnswer = false;
     _incomingSdp = null;
     _incomingDtls = null;
     speakerOn = false;
