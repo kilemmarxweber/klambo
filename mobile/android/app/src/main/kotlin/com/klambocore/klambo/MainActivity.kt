@@ -1,6 +1,9 @@
 package com.klambocore.klambo
 
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.media.RingtoneManager
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -12,6 +15,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private var pendingCall: String? = null
     private var autoAccept = false
+    private var systemRing: MediaPlayer? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -30,11 +34,20 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "stopRing" -> {
+                        stopSystemRing()
                         ContextCompat.startForegroundService(
                             this,
                             Intent(this, AlertConnectionService::class.java)
                                 .setAction(AlertConnectionService.ACTION_STOP_RING),
                         )
+                        result.success(null)
+                    }
+                    "startSystemRing" -> {
+                        startSystemRing()
+                        result.success(null)
+                    }
+                    "stopSystemRing" -> {
+                        stopSystemRing()
                         result.success(null)
                     }
                     "callOngoing" -> {
@@ -89,6 +102,52 @@ class MainActivity : FlutterActivity() {
             }
     }
 
+    /** Sonnerie par défaut du téléphone (réglages Android), en boucle. */
+    private fun startSystemRing() {
+        stopSystemRing()
+        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            ?: RingtoneManager.getActualDefaultRingtoneUri(
+                applicationContext,
+                RingtoneManager.TYPE_RINGTONE,
+            )
+            ?: return
+        val player = MediaPlayer()
+        try {
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+            player.setDataSource(applicationContext, uri)
+            player.isLooping = true
+            player.setOnPreparedListener { ready ->
+                if (systemRing === ready) ready.start()
+            }
+            systemRing = player
+            player.prepareAsync()
+        } catch (_: Exception) {
+            try {
+                player.release()
+            } catch (_: Exception) {
+            }
+            systemRing = null
+        }
+    }
+
+    private fun stopSystemRing() {
+        val player = systemRing ?: return
+        systemRing = null
+        try {
+            if (player.isPlaying) player.stop()
+        } catch (_: Exception) {
+        }
+        try {
+            player.release()
+        } catch (_: Exception) {
+        }
+    }
+
     /** Écran allumé seulement pendant un appel qui passe. Sinon, verrouillage normal. */
     private fun setCallHoldsScreen(hold: Boolean) {
         if (Build.VERSION.SDK_INT >= 27) {
@@ -117,6 +176,11 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         captureCall(intent)
+    }
+
+    override fun onDestroy() {
+        stopSystemRing()
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {

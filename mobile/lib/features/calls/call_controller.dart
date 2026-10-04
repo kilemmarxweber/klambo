@@ -71,6 +71,9 @@ class CallController extends ChangeNotifier {
   String icePath = "unknown";
   /// Vrai pendant la sonnerie ou l'appel quand la fenêtre est rangée.
   bool minimized = false;
+  DateTime? _callStartedAt;
+  Timer? _callClock;
+  Duration callElapsed = Duration.zero;
   final List<RTCIceCandidate> _pendingRemoteIce = [];
   final List<Map<String, dynamic>> _pendingLocalIce = [];
   final Set<String> _appliedRemoteIce = {};
@@ -98,6 +101,44 @@ class CallController extends ChangeNotifier {
       phase != CallPhase.idle && phase != CallPhase.ended;
 
   bool get isDisposed => _disposed;
+
+  String get callClockLabel {
+    final total = callElapsed.inSeconds;
+    final h = total ~/ 3600;
+    final m = (total ~/ 60) % 60;
+    final s = total % 60;
+    final mm = m.toString().padLeft(2, "0");
+    final ss = s.toString().padLeft(2, "0");
+    if (h > 0) return "$h:$mm:$ss";
+    return "$mm:$ss";
+  }
+
+  /// Le décompte vit ici : réduire l'écran ne le remet pas à zéro.
+  void _syncCallClock() {
+    if (phase == CallPhase.active || phase == CallPhase.connecting) {
+      if (phase == CallPhase.active) {
+        _callStartedAt ??= DateTime.now();
+      }
+      if (_callStartedAt != null) {
+        callElapsed = DateTime.now().difference(_callStartedAt!);
+      }
+      _callClock ??= Timer.periodic(const Duration(seconds: 1), (_) {
+        if (_disposed || _callStartedAt == null) return;
+        if (phase != CallPhase.active && phase != CallPhase.connecting) {
+          return;
+        }
+        callElapsed = DateTime.now().difference(_callStartedAt!);
+        if (phase == CallPhase.active) _safeNotify();
+      });
+      return;
+    }
+    if (phase == CallPhase.idle) {
+      _callClock?.cancel();
+      _callClock = null;
+      _callStartedAt = null;
+      callElapsed = Duration.zero;
+    }
+  }
 
   void setMinimized(bool value) {
     if (_disposed || minimized == value) return;
@@ -1451,6 +1492,7 @@ class CallController extends ChangeNotifier {
 
   void _safeNotify() {
     if (_disposed) return;
+    _syncCallClock();
     try {
       notifyListeners();
     } catch (_) {}
@@ -1530,6 +1572,10 @@ class CallController extends ChangeNotifier {
     } catch (_) {}
     _pc = null;
     _link.reset();
+    _callClock?.cancel();
+    _callClock = null;
+    _callStartedAt = null;
+    callElapsed = Duration.zero;
     minimized = false;
     phase = CallPhase.idle;
     active = null;

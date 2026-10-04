@@ -6,7 +6,7 @@ import "package:flutter/services.dart";
 import "package:klambo_messagerie/core/alert_prefs.dart";
 
 /// Sons in-app : bip message + sonnerie.
-/// Stratégie : système device d’abord, puis asset ; reset player si échec.
+/// Android : sonnerie par défaut du téléphone. Ailleurs : fichier WAV.
 class SoundService {
   SoundService._();
   static final SoundService instance = SoundService._();
@@ -14,8 +14,14 @@ class SoundService {
   AudioPlayer? _notify;
   AudioPlayer? _ring;
   bool _ringing = false;
+  bool _systemRing = false;
   bool _warmed = false;
   Timer? _ringFallbackTimer;
+
+  static const _androidRing = MethodChannel("klambo/background");
+
+  bool get _android =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
   /// Débloque / précharge le lecteur qui servira aux alertes automatiques.
   /// Le même player est réutilisé : un lecteur jetable ne débloque pas le suivant.
@@ -164,6 +170,18 @@ class SoundService {
       await HapticFeedback.heavyImpact();
     } catch (_) {}
 
+    if (_android) {
+      try {
+        await _androidRing.invokeMethod<void>("startSystemRing");
+        _systemRing = true;
+        debugPrint("[sound] android default ringtone");
+        return;
+      } catch (e) {
+        _systemRing = false;
+        debugPrint("[sound] android default ringtone failed: $e");
+      }
+    }
+
     var assetOk = false;
     try {
       final p = await _ringPlayer();
@@ -178,7 +196,7 @@ class SoundService {
       await _resetRingPlayer();
     }
 
-    // Si l’asset échoue : répéter le son système device pendant la sonnerie.
+    // Web / bureau : si l’asset échoue, répéter le bip système.
     if (!assetOk) {
       await _playSystemCue();
       _ringFallbackTimer = Timer.periodic(const Duration(seconds: 2), (_) {
@@ -193,6 +211,14 @@ class SoundService {
     _ringing = false;
     _ringFallbackTimer?.cancel();
     _ringFallbackTimer = null;
+    if (_systemRing) {
+      _systemRing = false;
+      try {
+        await _androidRing.invokeMethod<void>("stopSystemRing");
+      } catch (e) {
+        debugPrint("[sound] stop android ringtone: $e");
+      }
+    }
     final ring = _ring;
     if (ring == null) return;
     try {
@@ -209,6 +235,12 @@ class SoundService {
     _ringing = false;
     _ringFallbackTimer?.cancel();
     _ringFallbackTimer = null;
+    if (_systemRing) {
+      _systemRing = false;
+      try {
+        await _androidRing.invokeMethod<void>("stopSystemRing");
+      } catch (_) {}
+    }
     try {
       await _notify?.stop();
     } catch (_) {}

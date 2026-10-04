@@ -20,66 +20,16 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   late final CallController _c;
   bool _actionBusy = false;
   bool _popScheduled = false;
-  DateTime? _connectedAt;
-  Duration _elapsed = Duration.zero;
-  Timer? _clock;
 
   @override
   void initState() {
     super.initState();
     _c = widget.controller;
     _c.addListener(_onUpdate);
-    if (_c.phase == CallPhase.active) _startClock();
-  }
-
-  void _startClock() {
-    _connectedAt ??= DateTime.now().subtract(_elapsed);
-    _elapsed = DateTime.now().difference(_connectedAt!);
-    _clock ??= Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted || _connectedAt == null) return;
-      setState(() {
-        _elapsed = DateTime.now().difference(_connectedAt!);
-      });
-    });
-  }
-
-  /// Fige le temps déjà écoulé pendant `connecting` (reprise ICE).
-  void _pauseClock() {
-    if (_connectedAt != null) {
-      _elapsed = DateTime.now().difference(_connectedAt!);
-    }
-    _connectedAt = null;
-    _clock?.cancel();
-    _clock = null;
-  }
-
-  void _resetClock() {
-    _clock?.cancel();
-    _clock = null;
-    _connectedAt = null;
-    _elapsed = Duration.zero;
-  }
-
-  String get _clockLabel {
-    final total = _elapsed.inSeconds;
-    final h = total ~/ 3600;
-    final m = (total ~/ 60) % 60;
-    final s = total % 60;
-    final mm = m.toString().padLeft(2, "0");
-    final ss = s.toString().padLeft(2, "0");
-    if (h > 0) return "$h:$mm:$ss";
-    return "$mm:$ss";
   }
 
   void _onUpdate() {
     if (!mounted || _c.isDisposed) return;
-    if (_c.phase == CallPhase.active) {
-      _startClock();
-    } else if (_c.phase == CallPhase.idle || _c.phase == CallPhase.ended) {
-      _resetClock();
-    } else {
-      _pauseClock();
-    }
     if (_c.phase == CallPhase.idle) {
       _schedulePop();
       return;
@@ -117,7 +67,6 @@ class _CallScreenState extends ConsumerState<CallScreen> {
 
   @override
   void dispose() {
-    _pauseClock();
     if (!_c.isDisposed) {
       _c.removeListener(_onUpdate);
     }
@@ -238,7 +187,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                       if (_c.phase == CallPhase.active) ...[
                         const SizedBox(height: 8),
                         Text(
-                          _clockLabel,
+                          _c.callClockLabel,
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 20,
@@ -270,7 +219,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                   child: Column(
                     children: [
                       Text(
-                        _clockLabel,
+                        _c.callClockLabel,
                         textAlign: TextAlign.center,
                         style: const TextStyle(
                           color: Colors.white,
