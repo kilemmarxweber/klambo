@@ -17,13 +17,16 @@ class MessagingRepository {
     String organizationId, {
     String filter = "all",
     String? cursor,
+    String? since,
   }) async {
+    final delta = since != null && since.isNotEmpty;
     try {
       final data = await _api.getJson(
         "/organizations/$organizationId/conversations",
         query: {
           "filter": filter,
           if (cursor != null) "cursor": cursor,
+          if (delta) "since": since,
         },
       );
       final items = (data["items"] as List?) ?? [];
@@ -31,7 +34,8 @@ class MessagingRepository {
           .whereType<Map>()
           .map((e) => Map<String, dynamic>.from(e))
           .toList();
-      await _cache.saveConversations(organizationId, mapped);
+      // Un delta ne remplace pas le cache de toute la liste.
+      if (!delta) await _cache.saveConversations(organizationId, mapped);
       return {...data, "fromCache": false};
     } catch (e) {
       final cached = await _cache.getConversations(organizationId);

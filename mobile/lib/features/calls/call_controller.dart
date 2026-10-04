@@ -73,6 +73,7 @@ class CallController extends ChangeNotifier {
   final Set<String> _appliedRemoteIce = {};
   bool _answerApplied = false;
   Timer? _offerResendTimer;
+  DateTime? _historyFallbackAt;
   Timer? _ringTimeout;
   Timer? _restartTimer;
   Timer? _giveUpTimer;
@@ -767,6 +768,13 @@ class CallController extends ChangeNotifier {
     } catch (e) {
       debugPrint("[call] /calls/incoming: $e");
     }
+
+    final now = DateTime.now();
+    if (_historyFallbackAt != null &&
+        now.difference(_historyFallbackAt!) < const Duration(seconds: 60)) {
+      return;
+    }
+    _historyFallbackAt = now;
 
     final cutoff = DateTime.now().toUtc().subtract(const Duration(seconds: 50));
     for (final orgId in organizationIds) {

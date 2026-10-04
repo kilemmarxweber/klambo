@@ -123,6 +123,8 @@ class CallHub {
     socket.onPresenceEvent = presence.applyEvent;
     socket.onConnected = () {
       debugPrint("[hub] ws connected");
+      _emitLink("link.up");
+      _scheduleCallFallback();
       final orgId = presence.organizationId ?? initialOrganizationId;
       if (orgId != null && orgId.isNotEmpty) {
         socket.subscribePresence(orgId);
@@ -131,6 +133,11 @@ class CallHub {
       if (controller.isBusy) {
         unawaited(controller.pullRemoteSignal());
       }
+    };
+    socket.onDisconnected = () {
+      debugPrint("[hub] ws disconnected");
+      _emitLink("link.down");
+      _scheduleCallFallback();
     };
     if (initialOrganizationId != null && initialOrganizationId.isNotEmpty) {
       presence.setOrganization(initialOrganizationId);
@@ -144,8 +151,39 @@ class CallHub {
     });
     socket.connect();
     _watchNetwork();
-    _callPollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      unawaited(_pollCalls());
+    _scheduleCallFallback();
+  }
+
+  String? _callPollKey;
+
+  void _emitLink(String type) {
+    if (_messageController.isClosed) return;
+    _messageController.add({"type": type});
+  }
+
+  /// Aucune requête d'appel tant que le WebSocket répond.
+  /// Sinon un intervalle court en communication, long au repos.
+  void _scheduleCallFallback() {
+    final delay = callFallbackDelay(
+      socketConnected: socket.isConnected,
+      inCall: controller.isBusy,
+    );
+    final key = delay == null ? "off" : "${delay.inSeconds}";
+    if (key == _callPollKey &&
+        (delay == null || _callPollTimer?.isActive == true)) {
+      return;
+    }
+    _callPollKey = key;
+    _callPollTimer?.cancel();
+    _callPollTimer = null;
+    if (delay == null) return;
+    _callPollTimer = Timer(delay, () async {
+      _callPollKey = null;
+      try {
+        await _pollCalls();
+      } finally {
+        _scheduleCallFallback();
+      }
     });
   }
 
@@ -440,6 +478,7 @@ class CallHub {
   }
 
   void _onCallPhaseChanged() {
+    _scheduleCallFallback();
     final phase = controller.phase;
     if (phase == CallPhase.connecting || phase == CallPhase.active) {
       final peer = controller.active?.peerName?.trim();

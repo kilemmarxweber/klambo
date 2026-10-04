@@ -20,6 +20,7 @@ import "package:klambo_messagerie/core/satisfaction_trace.dart";
 import "package:klambo_messagerie/core/sound_service.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
 import "package:klambo_messagerie/features/calls/call_hub.dart";
+import "package:klambo_messagerie/features/conversations/inbox_sync_policy.dart";
 import "package:klambo_messagerie/features/chat/active_chat_provider.dart";
 import "package:klambo_messagerie/features/chat/split_chat.dart";
 import "package:klambo_messagerie/features/chat/contact_profile_screen.dart";
@@ -168,6 +169,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Timer? _typingClear;
   Timer? _presencePoll;
   Timer? _messagePoll;
+  Timer? _threadRefresh;
   bool _messagesPrimed = false;
   final Set<String> _knownMessageIds = {};
   Map<String, dynamic>? _replyTo;
@@ -315,9 +317,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       _eventsSub = ref.listenManual(messagingEventsProvider, (_, next) {
         next.whenData(_onRealtimeEvent);
       });
-      // Secours si WS coupé : refresh silencieux du fil (sans forcer le scroll).
-      _messagePoll = Timer.periodic(const Duration(seconds: 4), (_) {
-        if (mounted) unawaited(_load(silent: true));
+      // Le fil est chargé une fois. Secours HTTP seulement si le socket tombe.
+      _messagePoll = Timer.periodic(threadFallbackInterval, (_) {
+        final up = ref.read(callHubProvider)?.socket.isConnected ?? false;
+        if (!mounted || !shouldPollThread(socketConnected: up)) return;
+        unawaited(_load(silent: true));
       });
     });
   }
@@ -373,36 +377,38 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return;
     }
 
-    if (type.startsWith("call.") ||
-        type == "message.created" ||
-        type == "message.updated" ||
-        type == "message.deleted" ||
-        type == "conversation.updated") {
+    if (type == "conversation.updated") {
       if (convId != null && convId != widget.conversationId) return;
-
-      if (type == "conversation.updated") {
-        final reason = event["reason"]?.toString();
-        final readAtRaw = event["lastReadAt"]?.toString();
-        final readerId = event["userId"]?.toString();
-        final me = ref.read(sessionProvider).me?["user"];
-        final myId = me is Map ? me["id"]?.toString() : null;
-        if (reason == "read" &&
-            readAtRaw != null &&
-            readerId != null &&
-            readerId != myId) {
-          final parsed = DateTime.tryParse(readAtRaw)?.toUtc();
-          if (parsed != null) {
-            setState(() {
-              final current = _peerLastReadAt;
-              if (current == null || parsed.isAfter(current)) {
-                _peerLastReadAt = parsed;
-              }
-            });
-          }
+      final reason = event["reason"]?.toString();
+      final readAtRaw = event["lastReadAt"]?.toString();
+      final readerId = event["userId"]?.toString();
+      final me = ref.read(sessionProvider).me?["user"];
+      final myId = me is Map ? me["id"]?.toString() : null;
+      if (reason == "read" &&
+          readAtRaw != null &&
+          readerId != null &&
+          readerId != myId) {
+        final parsed = DateTime.tryParse(readAtRaw)?.toUtc();
+        if (parsed != null) {
+          setState(() {
+            final current = _peerLastReadAt;
+            if (current == null || parsed.isAfter(current)) {
+              _peerLastReadAt = parsed;
+            }
+          });
         }
       }
+      return;
+    }
 
-      unawaited(_load(silent: true));
+    if (type == "message.created" ||
+        type == "message.updated" ||
+        type == "message.deleted") {
+      if (convId != null && convId != widget.conversationId) return;
+      _threadRefresh?.cancel();
+      _threadRefresh = Timer(const Duration(milliseconds: 400), () {
+        if (mounted) unawaited(_load(silent: true));
+      });
     }
   }
 
@@ -410,6 +416,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void dispose() {
     _eventsSub?.close();
     _typingClear?.cancel();
+    _threadRefresh?.cancel();
     _presencePoll?.cancel();
     _messagePoll?.cancel();
     _presence?.removeListener(_onPresenceChanged);
@@ -462,12 +469,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     await pull();
     _presencePoll?.cancel();
-    _presencePoll = Timer.periodic(const Duration(seconds: 20), (_) {
-      if (mounted) pull();
-    });
-    // Second pull après 2s au cas où le peer vient juste de heartbeat.
-    Future<void>.delayed(const Duration(seconds: 2), () {
-      if (mounted) pull();
+    _presencePoll = Timer.periodic(presenceFallbackInterval, (_) {
+      final up = hub.socket.isConnected;
+      if (!mounted || !shouldPollPresence(socketConnected: up)) return;
+      pull();
     });
   }
 
@@ -1402,7 +1407,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
       }
       if (mounted) setState(() => _replyTo = null);
-      unawaited(SoundService.instance.playMessageTone());
       await _load(silent: true);
     } catch (e) {
       setState(() => _sendError = l10n.sendFailed);

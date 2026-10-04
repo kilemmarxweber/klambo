@@ -17,10 +17,12 @@ import "package:klambo_messagerie/core/satisfaction_trace.dart";
 import "package:klambo_messagerie/features/auth/my_profile_screen.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
 import "package:klambo_messagerie/features/calls/call_hub.dart";
+import "package:klambo_messagerie/features/chat/active_chat_provider.dart";
 import "package:klambo_messagerie/features/chat/chat_screen.dart";
 import "package:klambo_messagerie/features/chat/split_chat.dart";
 import "package:klambo_messagerie/features/chat/contact_profile_screen.dart";
 import "package:klambo_messagerie/features/conversations/group_profile_screen.dart";
+import "package:klambo_messagerie/features/conversations/inbox_sync_policy.dart";
 import "package:klambo_messagerie/features/conversations/new_chat_screen.dart";
 import "package:klambo_messagerie/features/conversations/new_group_screen.dart";
 import "package:klambo_messagerie/features/presence/presence_controller.dart";
@@ -85,7 +87,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
         AppPageRoute(builder: (_) => _chatFrom(current)),
       );
       _narrowChatPushing = false;
-      if (mounted) _load(silent: true);
+      if (mounted) _load(silent: true, catchUp: _listPrimed);
     });
   }
 
@@ -119,22 +121,14 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
       _bindPresence();
       _load();
       _eventsSub = ref.listenManual(messagingEventsProvider, (_, next) {
-        next.whenData((event) {
-          final type = event["type"]?.toString() ?? "";
-          if (type == "message.created" ||
-              type == "message.updated" ||
-              type == "message.deleted" ||
-              type == "conversation.updated" ||
-              type.startsWith("call.")) {
-            _reloadDebounce?.cancel();
-            _reloadDebounce = Timer(const Duration(milliseconds: 250), () {
-              if (mounted) _load(silent: true);
-            });
-          }
-        });
+        next.whenData(_onInboxEvent);
       });
-      _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-        if (mounted) _load(silent: true);
+      // Secours seulement si le WebSocket est coupé. Sinon la liste reste
+      // celle chargée à la connexion, mise à jour par les événements.
+      _pollTimer = Timer.periodic(inboxFallbackInterval, (_) {
+        final up = ref.read(callHubProvider)?.socket.isConnected ?? false;
+        if (!mounted || !shouldPollInbox(socketConnected: up)) return;
+        unawaited(_load(silent: true, catchUp: _listPrimed));
       });
     });
   }
@@ -197,7 +191,38 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     }
   }
 
-  Future<void> _load({bool silent = false}) async {
+  void _onInboxEvent(Map<String, dynamic> event) {
+    final type = event["type"]?.toString() ?? "";
+    if (type == "link.up") {
+      if (shouldCatchUpOnLink(inboxPrimed: _listPrimed)) {
+        unawaited(_load(silent: true, catchUp: true));
+      }
+      return;
+    }
+    final session = ref.read(sessionProvider);
+    final me = session.me?["user"];
+    final myId = me is Map ? me["id"]?.toString() : null;
+    final effect = applyInboxEvent(
+      items: _items,
+      event: event,
+      myUserId: myId,
+      openConversationId: ref.read(activeConversationIdProvider),
+      now: DateTime.now(),
+    );
+    if (effect == InboxEventEffect.patched) {
+      setState(() {});
+      _chimeNewConversations(_items);
+      return;
+    }
+    if (effect == InboxEventEffect.catchUp && _listPrimed) {
+      _reloadDebounce?.cancel();
+      _reloadDebounce = Timer(const Duration(milliseconds: 400), () {
+        if (mounted) unawaited(_load(silent: true, catchUp: true));
+      });
+    }
+  }
+
+  Future<void> _load({bool silent = false, bool catchUp = false}) async {
     final l10n = ref.read(l10nProvider);
     if (!silent) {
       setState(() {
@@ -232,7 +257,10 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
       }
 
       final repo = ref.read(messagingRepositoryProvider);
-      final merged = <Map<String, dynamic>>[];
+      final since = catchUp ? inboxWatermark(_items) : null;
+      final merged = catchUp
+          ? _items.map((item) => Map<String, dynamic>.from(item)).toList()
+          : <Map<String, dynamic>>[];
       final errors = <String>[];
       var anyCache = false;
 
@@ -241,7 +269,26 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
         if (orgId == null) continue;
         final orgName = org["name"]?.toString() ?? l10n.organizationFallback;
         try {
-          final data = await repo.listConversations(orgId, filter: _filter);
+          final data = await repo.listConversations(
+            orgId,
+            filter: _filter,
+            since: since,
+          );
+          if (catchUp) {
+            final page = (data["items"] as List?) ?? [];
+            mergeInboxItems(
+              merged,
+              page
+                  .whereType<Map>()
+                  .map((raw) => {
+                        ...Map<String, dynamic>.from(raw),
+                        "organizationId": orgId,
+                        "organizationName": orgName,
+                      })
+                  .toList(),
+            );
+            continue;
+          }
           if (data["fromCache"] == true) anyCache = true;
           final items = (data["items"] as List?) ?? [];
           for (final raw in items) {
@@ -274,7 +321,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
         }
       });
       unawaited(_syncLauncherBadge(merged));
-      unawaited(_refreshPresenceSnapshot());
+      if (!catchUp) unawaited(_refreshPresenceSnapshot());
       if (!anyCache) _chimeNewConversations(merged);
     } catch (e) {
       setState(() {
@@ -609,7 +656,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     await Navigator.of(context).push(
       AppPageRoute(builder: (_) => _chatFrom(target)),
     );
-    if (mounted) _load(silent: true);
+    if (mounted) _load(silent: true, catchUp: _listPrimed);
   }
 
   List<Map<String, dynamic>> get _filteredItems {

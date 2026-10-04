@@ -10,6 +10,22 @@ void main() {
   test("pas de sondage tant que le WebSocket est vivant", () {
     expect(shouldPollCalls(socketConnected: true), isFalse);
     expect(shouldPollCalls(socketConnected: false), isTrue);
+    expect(
+      callFallbackDelay(socketConnected: true, inCall: false),
+      isNull,
+    );
+    expect(
+      callFallbackDelay(socketConnected: true, inCall: true),
+      isNull,
+    );
+    expect(
+      callFallbackDelay(socketConnected: false, inCall: true),
+      const Duration(seconds: 3),
+    );
+    expect(
+      callFallbackDelay(socketConnected: false, inCall: false),
+      const Duration(seconds: 15),
+    );
   });
 
   test("décrocher depuis la notif attend que l'appel sonne", () {
