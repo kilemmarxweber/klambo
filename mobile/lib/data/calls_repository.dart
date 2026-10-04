@@ -9,12 +9,34 @@ class CallsRepository {
     return _api.getJson("/calls/ice-servers");
   }
 
+  Future<void> putCallIdentity(String publicKey) async {
+    await _api.postJson(
+      "/calls/identity",
+      data: {"publicKey": publicKey},
+    );
+  }
+
+  Future<Map<String, dynamic>> peerCallIdentity(String userId) {
+    return _api.getJson("/calls/identity/$userId");
+  }
+
+  Future<void> registerPushToken({
+    required String token,
+    required String platform,
+  }) async {
+    await _api.postJson(
+      "/calls/push-token",
+      data: {"token": token, "platform": platform},
+    );
+  }
+
   Future<Map<String, dynamic>> startCall({
     required String organizationId,
     required String calleeId,
     required String kind,
     String? conversationId,
     Map<String, dynamic>? sdp,
+    Map<String, dynamic>? dtls,
     String? callerName,
   }) {
     return _api.postJson(
@@ -24,6 +46,7 @@ class CallsRepository {
         "kind": kind,
         if (conversationId != null) "conversationId": conversationId,
         if (sdp != null) "sdp": sdp,
+        if (dtls != null) "dtls": dtls,
         if (callerName != null) "callerName": callerName,
       },
     );
@@ -35,6 +58,7 @@ class CallsRepository {
     required String action,
     String? endReason,
     Map<String, dynamic>? sdp,
+    Map<String, dynamic>? dtls,
   }) {
     return _api.postJson(
       "/organizations/$organizationId/calls/$callId/actions",
@@ -42,6 +66,7 @@ class CallsRepository {
         "action": action,
         if (endReason != null) "endReason": endReason,
         if (sdp != null) "sdp": sdp,
+        if (dtls != null) "dtls": dtls,
       },
     );
   }

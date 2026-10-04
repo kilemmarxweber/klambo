@@ -1,8 +1,13 @@
 import "dart:async";
+import "dart:convert";
 
+import "package:connectivity_plus/connectivity_plus.dart";
+import "package:flutter/foundation.dart";
 import "package:flutter/material.dart";
+import "package:flutter/services.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:klambo_messagerie/core/alert_prefs.dart";
+import "package:klambo_messagerie/core/background_alerts.dart";
 import "package:klambo_messagerie/core/media_urls.dart";
 import "package:klambo_messagerie/core/notification_service.dart";
 import "package:klambo_messagerie/core/sound_service.dart";
@@ -11,6 +16,8 @@ import "package:klambo_messagerie/data/messaging_repository.dart";
 import "package:klambo_messagerie/data/messaging_socket.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
 import "package:klambo_messagerie/features/calls/call_controller.dart";
+import "package:klambo_messagerie/features/calls/call_identity.dart";
+import "package:klambo_messagerie/features/calls/call_signal_policy.dart";
 import "package:klambo_messagerie/features/calls/call_screen.dart";
 import "package:klambo_messagerie/features/chat/active_chat_provider.dart";
 import "package:klambo_messagerie/features/presence/presence_controller.dart";
@@ -78,15 +85,24 @@ class CallHub {
     String? initialOrganizationId,
     required String? Function() readActiveConversationId,
     List<String> Function()? readOrganizationIds,
-  })  : _messaging = messaging,
+  })  : _calls = calls,
+        _messaging = messaging,
         _readActiveConversationId = readActiveConversationId,
         _readOrganizationIds = readOrganizationIds {
     presence = PresenceController();
     socket = MessagingSocket(token: token);
+    final identity = CallIdentity(calls: calls);
     controller = CallController(
       calls: calls,
       socket: socket,
       localUserId: localUserId,
+      identity: identity,
+    );
+    unawaited(identity.ensureRegistered());
+    _bindCallKit();
+    unawaited(_registerPushToken());
+    unawaited(
+      Future<void>.delayed(const Duration(milliseconds: 400), consumeNativeCall),
     );
     controller.addListener(_onCallPhaseChanged);
     controller.onIncomingRing = (_) {
@@ -112,6 +128,9 @@ class CallHub {
         socket.subscribePresence(orgId);
         unawaited(_heartbeat(orgId));
       }
+      if (controller.isBusy) {
+        unawaited(controller.pullRemoteSignal());
+      }
     };
     if (initialOrganizationId != null && initialOrganizationId.isNotEmpty) {
       presence.setOrganization(initialOrganizationId);
@@ -124,16 +143,21 @@ class CallHub {
       }
     });
     socket.connect();
+    _watchNetwork();
     _callPollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       unawaited(_pollCalls());
     });
   }
 
   final String localUserId;
+  final CallsRepository _calls;
   final MessagingRepository _messaging;
+  static const _callKit = MethodChannel("klambo/callkit");
   final String? Function() _readActiveConversationId;
   final List<String> Function()? _readOrganizationIds;
   Timer? _callPollTimer;
+  StreamSubscription<List<ConnectivityResult>>? _networkSub;
+  List<ConnectivityResult>? _lastNetwork;
   late final MessagingSocket socket;
   late final CallController controller;
   late final PresenceController presence;
@@ -148,8 +172,81 @@ class CallHub {
     return _messaging.presenceHeartbeat(organizationId);
   }
 
+  void _bindCallKit() {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
+    _callKit.setMethodCallHandler((call) async {
+      final args = call.arguments;
+      final map = args is Map ? Map<String, dynamic>.from(args) : const {};
+      final callId = map["callId"]?.toString();
+      if (call.method == "answered") {
+        if (callId != null &&
+            controller.active?.callId == callId &&
+            controller.phase == CallPhase.ringingIn) {
+          await controller.acceptIncoming();
+        }
+      } else if (call.method == "ended") {
+        if (controller.isBusy &&
+            (callId == null || controller.active?.callId == callId)) {
+          await controller.hangup();
+        }
+      }
+    });
+  }
+
+  Future<void> _registerPushToken() async {
+    final token = await BackgroundAlerts.pushToken();
+    if (token == null || token.isEmpty) return;
+    try {
+      await _calls.registerPushToken(token: token, platform: "android");
+    } catch (e) {
+      debugPrint("[hub] push token: $e");
+    }
+  }
+
+  /// Offre livrée par la notification Android. Le média n'est créé qu'au décrochage.
+  Future<void> consumeNativeCall() async {
+    final pending = await BackgroundAlerts.takePendingCall();
+    if (pending == null || controller.isDisposed) return;
+    final raw = pending["event"]?.toString();
+    if (raw == null || raw.isEmpty) return;
+    dynamic decoded;
+    try {
+      decoded = jsonDecode(raw);
+    } catch (_) {
+      return;
+    }
+    if (decoded is! Map) return;
+    await controller.handleIncomingOffer(Map<String, dynamic>.from(decoded));
+    if (shouldAutoAcceptNative(
+      requested: pending["autoAccept"] == true,
+      ringingIn: controller.phase == CallPhase.ringingIn,
+    )) {
+      await controller.acceptIncoming();
+    }
+  }
+
+  void _watchNetwork() {
+    _networkSub = Connectivity().onConnectivityChanged.listen((results) {
+      final prev = _lastNetwork;
+      _lastNetwork = results;
+      if (prev == null) return;
+      if (!_sameNetwork(prev, results)) {
+        controller.onNetworkChanged();
+      }
+    });
+  }
+
+  bool _sameNetwork(List<ConnectivityResult> a, List<ConnectivityResult> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
   Future<void> _pollCalls() async {
     if (controller.isDisposed) return;
+    if (!shouldPollCalls(socketConnected: socket.isConnected)) return;
     final orgs = _readOrganizationIds?.call() ?? const <String>[];
     try {
       if (controller.isBusy) {
@@ -173,6 +270,17 @@ class CallHub {
         callId: controller.active?.callId,
       ),
     );
+    if (!kIsWeb &&
+        defaultTargetPlatform == TargetPlatform.iOS &&
+        NotificationService.instance.isBackground) {
+      unawaited(
+        _callKit.invokeMethod<void>("reportIncoming", {
+          "callId": controller.active?.callId,
+          "name": name,
+          "video": controller.active?.kind == "VIDEO",
+        }),
+      );
+    }
   }
 
   void _onMessageEvent(Map<String, dynamic> event) {
@@ -333,6 +441,24 @@ class CallHub {
 
   void _onCallPhaseChanged() {
     final phase = controller.phase;
+    if (phase == CallPhase.connecting || phase == CallPhase.active) {
+      final peer = controller.active?.peerName?.trim();
+      final name = (peer != null && peer.isNotEmpty) ? peer : "Klambo";
+      unawaited(
+        BackgroundAlerts.setCallOngoing(
+          name: name,
+          video: controller.active?.kind == "VIDEO",
+        ),
+      );
+    } else if (phase == CallPhase.idle || phase == CallPhase.ended) {
+      unawaited(BackgroundAlerts.setCallIdle());
+      final callId = controller.active?.callId;
+      if (!kIsWeb &&
+          defaultTargetPlatform == TargetPlatform.iOS &&
+          callId != null) {
+        unawaited(_callKit.invokeMethod<void>("end", {"callId": callId}));
+      }
+    }
     if (phase == CallPhase.ringingIn || phase == CallPhase.ringingOut) {
       unawaited(SoundService.instance.startRingtone());
       if (phase == CallPhase.ringingIn) {
@@ -430,6 +556,8 @@ class CallHub {
   void dispose() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    unawaited(_networkSub?.cancel());
+    _networkSub = null;
     _callPollTimer?.cancel();
     _callPollTimer = null;
     controller.removeListener(_onCallPhaseChanged);

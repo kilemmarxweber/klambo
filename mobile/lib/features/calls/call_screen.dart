@@ -72,6 +72,9 @@ class _CallScreenState extends ConsumerState<CallScreen> {
         (_c.phase == CallPhase.ringingOut ||
             _c.phase == CallPhase.ended ||
             _c.phase == CallPhase.idle)) {
+      if (hint == "busy") return l10n.callBusy;
+      if (hint == "failed") return l10n.callMediaLost;
+      if (hint == "identity") return l10n.callIdentityFailed;
       return hint;
     }
     switch (_c.phase) {
@@ -156,6 +159,18 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                           color: Colors.white.withValues(alpha: 0.7),
                         ),
                       ),
+                      if (_c.phase == CallPhase.active &&
+                          _c.icePath != "unknown") ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          _c.icePath == "relay"
+                              ? l10n.callPathRelay
+                              : l10n.callPathDirect,
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.7),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),

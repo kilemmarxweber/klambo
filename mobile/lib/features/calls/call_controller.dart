@@ -4,6 +4,10 @@ import "package:flutter/foundation.dart";
 import "package:flutter_webrtc/flutter_webrtc.dart";
 import "package:klambo_messagerie/data/calls_repository.dart";
 import "package:klambo_messagerie/data/messaging_socket.dart";
+import "package:klambo_messagerie/features/calls/call_identity.dart";
+import "package:klambo_messagerie/features/calls/call_link.dart";
+import "package:klambo_messagerie/features/calls/call_media_stats.dart";
+import "package:klambo_messagerie/features/calls/call_signal_policy.dart";
 import "package:klambo_messagerie/features/calls/call_playback.dart";
 
 enum CallPhase { idle, ringingOut, ringingIn, connecting, active, ended }
@@ -34,13 +38,16 @@ class CallController extends ChangeNotifier {
     required CallsRepository calls,
     required MessagingSocket socket,
     required this.localUserId,
+    CallIdentity? identity,
   })  : _calls = calls,
-        _socket = socket {
+        _socket = socket,
+        _identity = identity {
     _socket.onCallEvent = _onSignal;
   }
 
   final CallsRepository _calls;
   final MessagingSocket _socket;
+  final CallIdentity? _identity;
   final String localUserId;
   void Function(ActiveCall call)? onIncomingRing;
 
@@ -60,12 +67,23 @@ class CallController extends ChangeNotifier {
   bool camOff = false;
   /// Coupé par défaut : volume de conversation. Activé : son fort.
   bool speakerOn = false;
+  /// host, srflx, relay ou unknown — renseigné pendant l'appel.
+  String icePath = "unknown";
   final List<RTCIceCandidate> _pendingRemoteIce = [];
   final Set<String> _appliedRemoteIce = {};
   bool _answerApplied = false;
   Timer? _offerResendTimer;
   Timer? _ringTimeout;
+  Timer? _restartTimer;
+  Timer? _giveUpTimer;
   Map<String, dynamic>? _lastOfferPayload;
+  final CallLink _link = CallLink();
+  bool _restartRequestSent = false;
+  bool _offerAcked = false;
+  Timer? _statsTimer;
+  int _videoBitrate = videoBitrateSteps.last;
+  int _prevLost = 0;
+  int _prevReceived = 0;
 
   bool get isBusy =>
       phase != CallPhase.idle && phase != CallPhase.ended;
@@ -135,7 +153,9 @@ class CallController extends ChangeNotifier {
         fromUserId: localUserId,
         payload: payload,
       );
-      unawaited(_postSignal("ice", payload));
+      if (persistIceOnRest(socketConnected: _socket.isConnected)) {
+        unawaited(_postSignal("ice", payload));
+      }
     };
 
     _pc!.onTrack = (event) {
@@ -147,20 +167,27 @@ class CallController extends ChangeNotifier {
       }
     };
 
+    _pc!.onIceConnectionState = (state) {
+      if (_disposed || _ending) return;
+      _onLinkSignal(parseIceSignal(state.toString()));
+    };
+
     _pc!.onConnectionState = (state) {
       if (_disposed || _ending) return;
-      if (state ==
-              RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
-        phase = CallPhase.active;
-        _safeNotify();
-      } else if (state ==
-          RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
-        unawaited(endLocal(reason: "failed"));
+      final name = state.toString();
+      if (name.contains("Connected") ||
+          name.contains("Disconnected") ||
+          name.contains("Failed")) {
+        _onLinkSignal(parseIceSignal(name));
       }
     };
 
     final mediaConstraints = <String, dynamic>{
-      "audio": true,
+      "audio": {
+        "echoCancellation": true,
+        "noiseSuppression": true,
+        "autoGainControl": true,
+      },
       "video": video
           ? {
               "facingMode": "user",
@@ -220,6 +247,245 @@ class CallController extends ChangeNotifier {
     });
   }
 
+  bool get _mediaPhase =>
+      phase == CallPhase.connecting || phase == CallPhase.active;
+
+  void onNetworkChanged() {
+    if (_disposed || _ending) return;
+    final action = _link.onNetworkChanged(mediaPhase: _mediaPhase);
+    if (action == CallLinkAction.scheduleRestart) {
+      _armRestart(const Duration(milliseconds: 600));
+    }
+  }
+
+  void _onLinkSignal(CallIceSignal signal) {
+    if (!_mediaPhase && signal != CallIceSignal.connected &&
+        signal != CallIceSignal.completed) {
+      return;
+    }
+    final action = _link.onIce(signal);
+    switch (action) {
+      case CallLinkAction.mediaUp:
+        _restartTimer?.cancel();
+        _restartTimer = null;
+        _giveUpTimer?.cancel();
+        _giveUpTimer = null;
+        _restartRequestSent = false;
+        if (phase != CallPhase.active) {
+          phase = CallPhase.active;
+          _stopRingTimeout();
+          _safeNotify();
+        }
+        _ensureStats();
+        break;
+      case CallLinkAction.scheduleRestart:
+        _armRestart(CallLink.disconnectGrace);
+        break;
+      case CallLinkAction.restartNow:
+        _armRestart(Duration.zero);
+        break;
+      case CallLinkAction.endFailed:
+        unawaited(endLocal(reason: "failed"));
+        break;
+      case CallLinkAction.none:
+        break;
+    }
+  }
+
+  void _armRestart(Duration delay) {
+    if (_restartTimer != null || _disposed || _ending) return;
+    _restartTimer = Timer(delay, () {
+      _restartTimer = null;
+      unawaited(_performRestart());
+    });
+  }
+
+  Future<void> _performRestart() async {
+    if (_disposed || _ending || active == null || !_mediaPhase) {
+      _link.disarm();
+      return;
+    }
+    if (!active!.isCaller) {
+      _link.disarm();
+      _requestPeerRestart();
+      _armGiveUp();
+      return;
+    }
+    final action = _link.takeRestart();
+    if (action == CallLinkAction.endFailed) {
+      await endLocal(reason: "failed");
+      return;
+    }
+    if (action != CallLinkAction.restartNow) return;
+    await _sendIceRestart();
+  }
+
+  void _requestPeerRestart() {
+    final call = active;
+    if (call == null || _restartRequestSent) return;
+    _restartRequestSent = true;
+    _socket.sendCallSignal(
+      type: "call.restart-request",
+      organizationId: call.organizationId,
+      callId: call.callId,
+      toUserId: call.peerUserId,
+      fromUserId: localUserId,
+    );
+  }
+
+  void _armGiveUp() {
+    if (_giveUpTimer != null) return;
+    _giveUpTimer = Timer(const Duration(seconds: 12), () {
+      _giveUpTimer = null;
+      if (_disposed || _ending || _link.mediaUp) return;
+      unawaited(endLocal(reason: "failed"));
+    });
+  }
+
+  Future<void> _sendIceRestart() async {
+    final call = active;
+    final pc = _pc;
+    if (call == null || pc == null || _disposed || _ending) {
+      _link.disarm();
+      return;
+    }
+    try {
+      try {
+        await pc.restartIce();
+      } catch (e) {
+        debugPrint("[call] restartIce: $e");
+      }
+      final video = call.kind == "VIDEO";
+      final offer = await pc.createOffer({
+        "iceRestart": true,
+        "offerToReceiveAudio": true,
+        "offerToReceiveVideo": video,
+      });
+      await pc.setLocalDescription(offer);
+      final payload = await _seal({
+        "iceRestart": true,
+        "sdp": {"type": offer.type, "sdp": offer.sdp},
+      });
+      _socket.sendCallSignal(
+        type: "call.renegotiate",
+        organizationId: call.organizationId,
+        callId: call.callId,
+        toUserId: call.peerUserId,
+        fromUserId: localUserId,
+        payload: payload,
+      );
+      debugPrint("[call] ice restart offer sent");
+    } catch (e) {
+      debugPrint("[call] ice restart failed: $e");
+      _link.disarm();
+      await endLocal(reason: "failed");
+    }
+  }
+
+  Future<void> _acceptRenegotiation(Map<String, dynamic> p) async {
+    final call = active;
+    final pc = _pc;
+    if (call == null || pc == null || call.isCaller) return;
+    final sdp = _sdpMap(p["sdp"]);
+    if (sdp == null) return;
+    if (!await _guard(call.peerUserId, p)) return;
+    final video = call.kind == "VIDEO";
+    await pc.setRemoteDescription(
+      RTCSessionDescription(
+        sdp["sdp"] as String,
+        sdp["type"] as String? ?? "offer",
+      ),
+    );
+    await _flushPendingIce();
+    final answer = await pc.createAnswer({
+      "offerToReceiveAudio": true,
+      "offerToReceiveVideo": video,
+    });
+    await pc.setLocalDescription(answer);
+    final answerSdp = {"type": answer.type, "sdp": answer.sdp};
+    final payload = await _seal({
+      "sdp": answerSdp,
+      "iceRestart": true,
+    });
+    _socket.sendCallSignal(
+      type: "call.answer",
+      organizationId: call.organizationId,
+      callId: call.callId,
+      toUserId: call.peerUserId,
+      fromUserId: localUserId,
+      payload: payload,
+    );
+  }
+
+  void _cancelLinkTimers() {
+    _restartTimer?.cancel();
+    _restartTimer = null;
+    _giveUpTimer?.cancel();
+    _giveUpTimer = null;
+    _statsTimer?.cancel();
+    _statsTimer = null;
+  }
+
+  void _ensureStats() {
+    if (_statsTimer != null || _disposed) return;
+    _statsTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      unawaited(_sampleStats());
+    });
+  }
+
+  Future<void> _sampleStats() async {
+    final pc = _pc;
+    if (pc == null || _disposed || _ending) return;
+    try {
+      final reports = await pc.getStats();
+      final snap = parseCallStats([
+        for (final report in reports)
+          {
+            "id": report.id,
+            "type": report.type,
+            "values": Map<String, dynamic>.from(report.values),
+          },
+      ]);
+      if (snap.path != icePath) {
+        icePath = snap.path;
+        debugPrint("[call] ice path $icePath");
+        _safeNotify();
+      }
+      if (active?.kind != "VIDEO") return;
+      final deltaLost = snap.packetsLost - _prevLost;
+      final deltaReceived = snap.packetsReceived - _prevReceived;
+      _prevLost = snap.packetsLost;
+      _prevReceived = snap.packetsReceived;
+      if (deltaLost < 0 || deltaReceived < 0) return;
+      final next = nextVideoBitrate(
+        current: _videoBitrate,
+        deltaLost: deltaLost,
+        deltaReceived: deltaReceived,
+        rttMs: snap.rttMs,
+      );
+      if (next == _videoBitrate) return;
+      _videoBitrate = next;
+      await _applyVideoBitrate(next);
+      debugPrint("[call] video bitrate $next");
+    } catch (e) {
+      debugPrint("[call] stats: $e");
+    }
+  }
+
+  Future<void> _applyVideoBitrate(int bitrate) async {
+    final pc = _pc;
+    if (pc == null) return;
+    final senders = await pc.getSenders();
+    for (final sender in senders) {
+      if (sender.track?.kind != "video") continue;
+      final params = sender.parameters;
+      final encodings = params.encodings;
+      if (encodings == null || encodings.isEmpty) continue;
+      encodings.first.maxBitrate = bitrate;
+      await sender.setParameters(params);
+    }
+  }
+
   Future<void> startOutgoing({
     required String organizationId,
     required String calleeId,
@@ -234,6 +500,7 @@ class CallController extends ChangeNotifier {
     _safeNotify();
 
     try {
+      await _identity?.ensureRegistered();
       final video = kind == "VIDEO";
       await _ensurePeer(video);
       if (_disposed || _ending || _pc == null) {
@@ -247,13 +514,18 @@ class CallController extends ChangeNotifier {
       });
       await _pc!.setLocalDescription(offer);
 
+      final offerSdp = {"type": offer.type, "sdp": offer.sdp};
+      final sealedOffer = await _seal({"sdp": offerSdp});
       final created = await _calls.startCall(
         organizationId: organizationId,
         calleeId: calleeId,
         kind: kind,
         conversationId: conversationId,
         callerName: callerName,
-        sdp: {"type": offer.type, "sdp": offer.sdp},
+        sdp: offerSdp,
+        dtls: sealedOffer["dtls"] is Map
+            ? Map<String, dynamic>.from(sealedOffer["dtls"] as Map)
+            : null,
       );
 
       if (_disposed || _ending) return;
@@ -272,10 +544,12 @@ class CallController extends ChangeNotifier {
       // puisse répondre (sinon l'appel « sonne » chez l'appelant seulement).
       _lastOfferPayload = {
         "kind": kind,
-        "sdp": {"type": offer.type, "sdp": offer.sdp},
+        "sdp": offerSdp,
         "callerName": callerName,
+        if (sealedOffer["dtls"] != null) "dtls": sealedOffer["dtls"],
         if (conversationId != null) "conversationId": conversationId,
       };
+      _offerAcked = false;
       _socket.sendCallSignal(
         type: "call.offer",
         organizationId: organizationId,
@@ -284,7 +558,9 @@ class CallController extends ChangeNotifier {
         fromUserId: localUserId,
         payload: _lastOfferPayload,
       );
-      unawaited(_postSignal("offer", _lastOfferPayload!));
+      if (persistOfferSnapshotOnRest(socketConnected: _socket.isConnected)) {
+        unawaited(_postSignal("offer", _lastOfferPayload!));
+      }
       _startOfferResend();
       _startRingTimeout();
 
@@ -319,7 +595,10 @@ class CallController extends ChangeNotifier {
     _offerResendTimer = Timer.periodic(const Duration(seconds: 2), (t) {
       if (_disposed ||
           _ending ||
-          phase != CallPhase.ringingOut ||
+          !shouldResendOffer(
+            acked: _offerAcked,
+            ringingOut: phase == CallPhase.ringingOut,
+          ) ||
           active == null ||
           _lastOfferPayload == null) {
         t.cancel();
@@ -346,6 +625,7 @@ class CallController extends ChangeNotifier {
     _offerResendTimer?.cancel();
     _offerResendTimer = null;
     _lastOfferPayload = null;
+    _offerAcked = false;
   }
 
   /// Appel entrant reçu via WS `call.offer` ou via le sondage REST.
@@ -367,6 +647,21 @@ class CallController extends ChangeNotifier {
       if (_incomingSdp == null && sdp != null) _incomingSdp = sdp;
       return;
     }
+    final inCall = phase != CallPhase.idle && phase != CallPhase.ended;
+    if (shouldReplyBusy(inCall: inCall, sameCall: active?.callId == callId)) {
+      final org = event["organizationId"]?.toString() ?? "";
+      if (org.isNotEmpty) {
+        _socket.sendCallSignal(
+          type: "call.busy",
+          organizationId: org,
+          callId: callId,
+          toUserId: fromId,
+          fromUserId: localUserId,
+        );
+      }
+      debugPrint("[call] busy — ignored $callId");
+      return;
+    }
     if (phase != CallPhase.idle) return;
     active = ActiveCall(
       callId: callId,
@@ -380,7 +675,15 @@ class CallController extends ChangeNotifier {
     );
     phase = CallPhase.ringingIn;
     _incomingSdp = sdp;
+    _incomingDtls = p["dtls"];
     _answerApplied = false;
+    _socket.sendCallSignal(
+      type: "call.ack",
+      organizationId: active!.organizationId,
+      callId: callId,
+      toUserId: fromId,
+      fromUserId: localUserId,
+    );
     _startRingTimeout();
     _safeNotify();
     debugPrint("[call] incoming $callId from $fromId");
@@ -438,6 +741,7 @@ class CallController extends ChangeNotifier {
           "payload": {
             "kind": item["kind"],
             "sdp": item["sdp"],
+            "dtls": item["dtls"],
             "callerName": item["callerName"],
             "conversationId": item["conversationId"],
           },
@@ -465,14 +769,17 @@ class CallController extends ChangeNotifier {
           final callId = item["id"]?.toString();
           if (callId == null || callId.isEmpty) continue;
           dynamic sdp;
+          dynamic dtls;
           try {
             final signal = await _calls.callSignal(
               organizationId: orgId,
               callId: callId,
             );
-            sdp = signal["offer"] is Map
-                ? (signal["offer"] as Map)["sdp"]
-                : null;
+            final offer = signal["offer"];
+            if (offer is Map) {
+              sdp = offer["sdp"];
+              dtls = offer["dtls"];
+            }
           } catch (_) {}
           await handleIncomingOffer({
             "callId": callId,
@@ -484,6 +791,7 @@ class CallController extends ChangeNotifier {
             "payload": {
               "kind": item["kind"],
               "sdp": sdp,
+              "dtls": dtls,
               "conversationId": item["conversationId"],
             },
           });
@@ -516,7 +824,8 @@ class CallController extends ChangeNotifier {
       if (phase == CallPhase.ringingIn ||
           phase == CallPhase.ringingOut ||
           phase == CallPhase.connecting) {
-        await endLocal(reason: status);
+        final endReason = data["endReason"]?.toString();
+        await endLocal(reason: endReason == "busy" ? "busy" : status);
       }
       return;
     }
@@ -525,7 +834,11 @@ class CallController extends ChangeNotifier {
       final answer = data["answer"];
       final sdp = _sdpFromSignal(answer);
       if (sdp != null && _pc != null) {
-        _answerApplied = true;
+        final container = answer is Map
+            ? Map<String, dynamic>.from(answer)
+            : <String, dynamic>{"sdp": sdp};
+        if (!await _guard(call.peerUserId, container)) return;
+        if (phase == CallPhase.ringingOut) phase = CallPhase.connecting;
         await _pc!.setRemoteDescription(
           RTCSessionDescription(
             sdp["sdp"] as String,
@@ -533,7 +846,12 @@ class CallController extends ChangeNotifier {
           ),
         );
         await _flushPendingIce();
-        phase = CallPhase.active;
+        _answerApplied = true;
+        if (markActiveOnAnswer(mediaAlreadyUp: _link.mediaUp)) {
+          phase = CallPhase.active;
+        } else {
+          phase = CallPhase.connecting;
+        }
         _stopOfferResend();
         _stopRingTimeout();
         _safeNotify();
@@ -573,6 +891,35 @@ class CallController extends ChangeNotifier {
   }
 
   Map<String, dynamic>? _incomingSdp;
+  dynamic _incomingDtls;
+
+  Future<Map<String, dynamic>> _seal(Map<String, dynamic> payload) async {
+    final identity = _identity;
+    if (identity == null) return payload;
+    final sdp = _sdpMap(payload["sdp"]);
+    final text = sdp?["sdp"]?.toString();
+    if (text == null || text.isEmpty) return payload;
+    final dtls = await identity.proofFor(text);
+    return {...payload, "dtls": dtls};
+  }
+
+  Future<bool> _guard(String peerId, Map<String, dynamic>? container) async {
+    final identity = _identity;
+    if (identity == null || container == null) return true;
+    final sdp = _sdpMap(container["sdp"]) ?? _sdpFromSignal(container);
+    final text = sdp?["sdp"]?.toString() ?? "";
+    try {
+      await identity.verify(
+        peerUserId: peerId,
+        sdp: text,
+        dtls: container["dtls"],
+      );
+      return true;
+    } on CallIdentityException {
+      await endLocal(reason: "identity");
+      return false;
+    }
+  }
 
   Future<void> acceptIncoming() async {
     if (active == null || phase != CallPhase.ringingIn) return;
@@ -591,6 +938,13 @@ class CallController extends ChangeNotifier {
       await endLocal(reason: "missing_offer");
       return;
     }
+    if (!await _guard(active!.peerUserId, {
+      "sdp": _incomingSdp,
+      "dtls": _incomingDtls,
+    })) {
+      return;
+    }
+    await _identity?.ensureRegistered();
 
     await _pc!.setRemoteDescription(
       RTCSessionDescription(
@@ -607,24 +961,32 @@ class CallController extends ChangeNotifier {
     await _pc!.setLocalDescription(answer);
 
     final answerSdp = {"type": answer.type, "sdp": answer.sdp};
-    await _postSignal("answer", {"sdp": answerSdp});
-    await _calls.callAction(
-      organizationId: active!.organizationId,
-      callId: active!.callId,
-      action: "answer",
-      sdp: answerSdp,
-    );
-
+    final sealedAnswer = await _seal({"sdp": answerSdp});
+    final dtls = sealedAnswer["dtls"] is Map
+        ? Map<String, dynamic>.from(sealedAnswer["dtls"] as Map)
+        : null;
     _socket.sendCallSignal(
       type: "call.answer",
       organizationId: active!.organizationId,
       callId: active!.callId,
       toUserId: active!.peerUserId,
       fromUserId: localUserId,
-      payload: {"sdp": answerSdp},
+      payload: sealedAnswer,
     );
+    await _calls.callAction(
+      organizationId: active!.organizationId,
+      callId: active!.callId,
+      action: "answer",
+      sdp: answerSdp,
+      dtls: dtls,
+    );
+    if (!_socket.isConnected) {
+      await _postSignal("answer", {"sdp": answerSdp});
+    }
 
-    phase = CallPhase.active;
+    phase = markActiveOnAnswer(mediaAlreadyUp: _link.mediaUp)
+        ? CallPhase.active
+        : CallPhase.connecting;
     _stopOfferResend();
     _stopRingTimeout();
     _safeNotify();
@@ -679,12 +1041,17 @@ class CallController extends ChangeNotifier {
     if (phase == CallPhase.idle && active == null) return;
     _stopOfferResend();
     _stopRingTimeout();
+    _cancelLinkTimers();
     _ending = true;
     try {
       phase = CallPhase.ended;
       _safeNotify();
       await _cleanup();
       if (_disposed) return;
+      if (reason == "busy" || reason == "failed" || reason == "identity") {
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+        if (_disposed) return;
+      }
       phase = CallPhase.idle;
       active = null;
       error = reason;
@@ -747,27 +1114,58 @@ class CallController extends ChangeNotifier {
 
     switch (type) {
       case "call.answer":
-        if (active!.isCaller && !_answerApplied && p?["sdp"] is Map) {
+        final restart = p?["iceRestart"] == true;
+        if (active!.isCaller && p?["sdp"] is Map && (restart || !_answerApplied)) {
           final sdp = Map<String, dynamic>.from(p!["sdp"] as Map);
-          _answerApplied = true;
-          await _pc?.setRemoteDescription(
-            RTCSessionDescription(
-              sdp["sdp"] as String,
-              sdp["type"] as String? ?? "answer",
-            ),
-          );
-          await _flushPendingIce();
-          phase = CallPhase.active;
-          _stopOfferResend();
-          _stopRingTimeout();
+          if (!await _guard(active!.peerUserId, p)) return;
           try {
-            await _calls.callAction(
-              organizationId: active!.organizationId,
-              callId: active!.callId,
-              action: "answer",
+            if (phase == CallPhase.ringingOut) phase = CallPhase.connecting;
+            await _pc?.setRemoteDescription(
+              RTCSessionDescription(
+                sdp["sdp"] as String,
+                sdp["type"] as String? ?? "answer",
+              ),
             );
-          } catch (_) {}
-          _safeNotify();
+            if (!restart) _answerApplied = true;
+            await _flushPendingIce();
+            phase = markActiveOnAnswer(mediaAlreadyUp: _link.mediaUp)
+                ? CallPhase.active
+                : CallPhase.connecting;
+            _stopOfferResend();
+            _stopRingTimeout();
+            _safeNotify();
+          } catch (e) {
+            debugPrint("[call] answer apply failed: $e");
+          }
+        }
+        break;
+      case "call.renegotiate":
+        if (p != null) {
+          try {
+            await _acceptRenegotiation(p);
+          } catch (e) {
+            debugPrint("[call] renegotiate failed: $e");
+          }
+        }
+        break;
+      case "call.restart-request":
+        if (active!.isCaller) {
+          _link.disarm();
+          _armRestart(Duration.zero);
+        }
+        break;
+      case "call.ack":
+        if (active!.isCaller && phase == CallPhase.ringingOut) {
+          _offerAcked = true;
+          _offerResendTimer?.cancel();
+          _offerResendTimer = null;
+          debugPrint("[call] offer acked");
+        }
+        break;
+      case "call.busy":
+        if (active!.isCaller &&
+            (phase == CallPhase.ringingOut || phase == CallPhase.connecting)) {
+          await endLocal(reason: "busy");
         }
         break;
       case "call.ice":
@@ -832,13 +1230,22 @@ class CallController extends ChangeNotifier {
     _appliedRemoteIce.clear();
     _answerApplied = false;
     _incomingSdp = null;
+    _incomingDtls = null;
     speakerOn = false;
+    _restartRequestSent = false;
+    _offerAcked = false;
+    icePath = "unknown";
+    _videoBitrate = videoBitrateSteps.last;
+    _prevLost = 0;
+    _prevReceived = 0;
+    _link.reset();
   }
 
   /// Teardown synchrone best-effort (swipe kill / dispose Riverpod).
   void forceTeardown() {
     _stopOfferResend();
     _stopRingTimeout();
+    _cancelLinkTimers();
     _ending = true;
     try {
       localRenderer.srcObject = null;
@@ -861,6 +1268,7 @@ class CallController extends ChangeNotifier {
       _pc?.close();
     } catch (_) {}
     _pc = null;
+    _link.reset();
     phase = CallPhase.idle;
     active = null;
   }

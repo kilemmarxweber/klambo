@@ -53,6 +53,53 @@ class BackgroundAlerts {
     }
   }
 
+  /// Notification d'appel en cours pour que l'OS ne tue pas le micro.
+  static Future<void> setCallOngoing({
+    required String name,
+    required bool video,
+  }) async {
+    if (!_android) return;
+    try {
+      await _channel.invokeMethod<void>("callOngoing", {
+        "name": name,
+        "video": video,
+      });
+    } catch (e) {
+      debugPrint("[bg] callOngoing: $e");
+    }
+  }
+
+  static Future<void> setCallIdle() async {
+    if (!_android) return;
+    try {
+      await _channel.invokeMethod<void>("callIdle");
+    } catch (e) {
+      debugPrint("[bg] callIdle: $e");
+    }
+  }
+
+  /// Offre reçue par la notif Android. `autoAccept` = bouton Décrocher.
+  static Future<Map<String, dynamic>?> takePendingCall() async {
+    if (!_android) return null;
+    try {
+      final raw = await _channel.invokeMethod<dynamic>("takePendingCall");
+      if (raw is Map) return Map<String, dynamic>.from(raw);
+    } catch (e) {
+      debugPrint("[bg] pending call: $e");
+    }
+    return null;
+  }
+
+  /// Jeton push si une intégration FCM est branchée. Sinon null.
+  static Future<String?> pushToken() async {
+    if (!_android) return null;
+    try {
+      return await _channel.invokeMethod<String>("pushToken");
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Coupe la sonnerie native une fois que l'écran d'appel Flutter est prêt.
   static Future<void> stopNativeRing() async {
     if (!_android || !serviceStarted) return;

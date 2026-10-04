@@ -409,6 +409,17 @@ class L10n {
       _t("Appel entrant", "Incoming call", "Chamada recebida");
   String get callConnecting =>
       _t("Connexion…", "Connecting…", "A ligar…");
+  String get callBusy => _t("Occupé", "Busy", "Ocupado");
+  String get callMediaLost =>
+      _t("Connexion perdue", "Connection lost", "Ligação perdida");
+  String get callPathDirect =>
+      _t("Direct", "Direct", "Direto");
+  String get callPathRelay => _t("Relais", "Relay", "Retransmissão");
+  String get callIdentityFailed => _t(
+        "Identité d'appel non vérifiée",
+        "Call identity could not be verified",
+        "Identidade da chamada não verificada",
+      );
   String get callVideoActive =>
       _t("Visite vidéo", "Video visit", "Visita de vídeo");
   String get callAudioActive =>

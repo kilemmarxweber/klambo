@@ -80,6 +80,7 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
       unawaited(BackgroundAlerts.touch());
     }
     if (state == AppLifecycleState.resumed && hub != null) {
+      unawaited(hub.consumeNativeCall());
       if (!hub.socket.isConnected) {
         hub.socket.reconnectNow();
       }

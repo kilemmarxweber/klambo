@@ -77,6 +77,16 @@ class AlertConnectionService : Service() {
                 declinePending()
                 return START_STICKY
             }
+            ACTION_ONGOING -> {
+                val name = intent.getStringExtra(EXTRA_NAME) ?: "Klambo"
+                val video = intent.getBooleanExtra(EXTRA_VIDEO, false)
+                startInCallForeground(callOngoingNotification(name), video)
+                return START_STICKY
+            }
+            ACTION_IDLE -> {
+                startMessagingForeground(ongoing)
+                return START_STICKY
+            }
         }
         acquireWakeLock()
         if (socket == null) connect()
@@ -369,20 +379,71 @@ class AlertConnectionService : Service() {
         return stored ?: "https://klambocore.com"
     }
 
-    private fun incomingIntent(raw: String): Intent {
+    private fun incomingIntent(raw: String, accept: Boolean): Intent {
         return Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(EXTRA_CALL, raw)
+            putExtra(EXTRA_ACCEPT, accept)
         }
+    }
+
+    private fun startMessagingForeground(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(
+                ONGOING_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING,
+            )
+        } else {
+            startForeground(ONGOING_ID, notification)
+        }
+    }
+
+    private fun startInCallForeground(notification: Notification, video: Boolean) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            if (video) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            }
+            if (Build.VERSION.SDK_INT >= 34) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
+            }
+            startForeground(ONGOING_ID, notification, types)
+        } else {
+            startForeground(ONGOING_ID, notification)
+        }
+    }
+
+    private fun callOngoingNotification(name: String): Notification {
+        val launch = PendingIntent.getActivity(
+            this,
+            14,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CALL_CHANNEL)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+        return builder
+            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setContentTitle(name)
+            .setContentText("Appel en cours")
+            .setOngoing(true)
+            .setCategory(Notification.CATEGORY_CALL)
+            .setContentIntent(launch)
+            .build()
     }
 
     private fun postIncomingCall(title: String, body: String, raw: String, sound: Boolean) {
         val answer = PendingIntent.getActivity(
             this,
             11,
-            incomingIntent(raw),
+            incomingIntent(raw, accept = true),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val decline = PendingIntent.getService(
@@ -405,7 +466,14 @@ class AlertConnectionService : Service() {
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setAutoCancel(false)
-            .setContentIntent(answer)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this,
+                    13,
+                    incomingIntent(raw, accept = false),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                ),
+            )
             .setFullScreenIntent(answer, true)
             .setOnlyAlertOnce(false)
         if (Build.VERSION.SDK_INT >= 31) {
@@ -571,7 +639,12 @@ class AlertConnectionService : Service() {
         private const val MESSAGE_CHANNEL = "klambo_messages_bg_v2"
         const val ACTION_STOP_RING = "com.klambocore.klambo.STOP_RING"
         const val ACTION_DECLINE = "com.klambocore.klambo.DECLINE_CALL"
+        const val ACTION_ONGOING = "com.klambocore.klambo.CALL_ONGOING"
+        const val ACTION_IDLE = "com.klambocore.klambo.CALL_IDLE"
         const val EXTRA_CALL = "klambo_call_event"
+        const val EXTRA_ACCEPT = "klambo_call_accept"
+        const val EXTRA_NAME = "klambo_call_name"
+        const val EXTRA_VIDEO = "klambo_call_video"
         private const val CALL_NOTIF_ID = 900001
         private const val PENDING_CALL_KEY = "flutter.klambo_pending_call"
         private const val CALL_CHANNEL = "klambo_calls_bg_v2"
