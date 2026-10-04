@@ -1,3 +1,5 @@
+import "dart:async";
+
 import "package:flutter/material.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:flutter_webrtc/flutter_webrtc.dart";
@@ -17,16 +19,52 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   late final CallController _c;
   bool _actionBusy = false;
   bool _popScheduled = false;
+  DateTime? _connectedAt;
+  Duration _elapsed = Duration.zero;
+  Timer? _clock;
 
   @override
   void initState() {
     super.initState();
     _c = widget.controller;
     _c.addListener(_onUpdate);
+    if (_c.phase == CallPhase.active) _startClock();
+  }
+
+  void _startClock() {
+    _connectedAt ??= DateTime.now();
+    _elapsed = DateTime.now().difference(_connectedAt!);
+    _clock ??= Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _connectedAt == null) return;
+      setState(() {
+        _elapsed = DateTime.now().difference(_connectedAt!);
+      });
+    });
+  }
+
+  void _stopClock() {
+    _clock?.cancel();
+    _clock = null;
+  }
+
+  String get _clockLabel {
+    final total = _elapsed.inSeconds;
+    final h = total ~/ 3600;
+    final m = (total ~/ 60) % 60;
+    final s = total % 60;
+    final mm = m.toString().padLeft(2, "0");
+    final ss = s.toString().padLeft(2, "0");
+    if (h > 0) return "$h:$mm:$ss";
+    return "$mm:$ss";
   }
 
   void _onUpdate() {
     if (!mounted || _c.isDisposed) return;
+    if (_c.phase == CallPhase.active) {
+      _startClock();
+    } else if (_c.phase == CallPhase.idle || _c.phase == CallPhase.ended) {
+      _stopClock();
+    }
     if (_c.phase == CallPhase.idle) {
       _schedulePop();
       return;
@@ -44,12 +82,9 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   void _schedulePop() {
     if (_popScheduled || !mounted) return;
     _popScheduled = true;
-    setState(() {});
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        Navigator.of(context).maybePop();
-      });
+      if (!mounted) return;
+      Navigator.of(context).maybePop();
     });
   }
 
@@ -67,6 +102,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
 
   @override
   void dispose() {
+    _stopClock();
     if (!_c.isDisposed) {
       _c.removeListener(_onUpdate);
     }
@@ -173,7 +209,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                       if (_c.phase == CallPhase.active) ...[
                         const SizedBox(height: 8),
                         Text(
-                          _c.callClockLabel,
+                          _clockLabel,
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 20,
@@ -205,7 +241,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                   child: Column(
                     children: [
                       Text(
-                        _c.callClockLabel,
+                        _clockLabel,
                         textAlign: TextAlign.center,
                         style: const TextStyle(
                           color: Colors.white,

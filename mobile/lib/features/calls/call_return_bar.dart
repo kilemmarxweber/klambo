@@ -82,7 +82,10 @@ class _CallReturnBar extends ConsumerWidget {
     final name =
         (raw != null && raw.isNotEmpty) ? raw : l10n.callPeerFallback;
     if (controller.phase == CallPhase.active) {
-      return "$name   ${controller.callClockLabel}";
+      return name;
+    }
+    if (controller.phase == CallPhase.ringingOut) {
+      return "$name · ${l10n.callPeerAway}";
     }
     if (controller.phase == CallPhase.connecting) {
       return "$name · ${l10n.callConnecting}";

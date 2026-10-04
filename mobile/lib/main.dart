@@ -92,18 +92,6 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
           userId: hub.localUserId,
         ));
       }
-      // Après pause/hidden, minimizeCall a retiré /call : rouvrir si l'appel vit.
-      if (!hub.controller.isDisposed && hub.controller.isBusy) {
-        hub.showCallScreen();
-      }
-    }
-    // Accueil, autre appli ou écran verrouillé : on détache la vidéo
-    // tout de suite. Sinon la surface WebRTC fige l'activité.
-    if (!kIsWeb &&
-        hub != null &&
-        (state == AppLifecycleState.hidden ||
-            state == AppLifecycleState.paused)) {
-      hub.minimizeCall();
     }
     // Uniquement kill process / detach — pas `hidden` (Chrome le tire souvent
     // et coupait l'appel + disposait le media en plein ring).

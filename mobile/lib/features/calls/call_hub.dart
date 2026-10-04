@@ -574,8 +574,7 @@ class CallHub {
     }
   }
 
-  /// Range l'écran d'appel sans couper le média.
-  /// Le retour Android, le balayage vers l'accueil et le verrouillage passent ici.
+  /// Range l'écran, y compris pendant la sonnerie, sans couper l'appel.
   void minimizeCall() {
     if (controller.isDisposed || !controller.isBusy || controller.minimized) {
       return;
