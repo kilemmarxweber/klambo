@@ -1,9 +1,23 @@
 /// Quand écrire le signaling en REST, et quand sonder.
 ///
 /// Le WebSocket porte l'offre, la réponse et les candidats ICE.
-/// REST ne garde qu'un secours (socket coupé) plus l'offre déjà enregistrée
-/// au `POST /calls`.
-bool persistIceOnRest({required bool socketConnected}) => !socketConnected;
+/// REST garde les candidats publics (autre réseau) et sert de secours
+/// si le socket est coupé. L'offre initiale est déjà au `POST /calls`.
+/// Candidat joignable hors du réseau local (STUN ou relais).
+bool isPublicIceCandidate(String candidate) {
+  return candidate.contains(" typ srflx") || candidate.contains(" typ relay");
+}
+
+/// Les candidats locaux restent sur le WebSocket.
+/// Les candidats publics sont aussi écrits en REST : un paquet perdu
+/// empêche l'appel dès que les téléphones ne sont plus sur le même routeur.
+bool persistIceOnRest({
+  required bool socketConnected,
+  required String candidate,
+}) {
+  if (!socketConnected) return true;
+  return isPublicIceCandidate(candidate);
+}
 
 bool persistOfferSnapshotOnRest({required bool socketConnected}) =>
     !socketConnected;

@@ -45,6 +45,8 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   void _stopClock() {
     _clock?.cancel();
     _clock = null;
+    _connectedAt = null;
+    _elapsed = Duration.zero;
   }
 
   String get _clockLabel {

@@ -29,7 +29,7 @@ CallIceSignal parseIceSignal(String raw) {
 class CallLink {
   static const maxRestarts = 1;
   static const disconnectGrace = Duration(seconds: 5);
-  static const initialConnectBudget = Duration(seconds: 30);
+  static const initialConnectBudget = Duration(seconds: 45);
 
   int restartAttempts = 0;
   bool restartInFlight = false;

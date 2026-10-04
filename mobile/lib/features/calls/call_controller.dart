@@ -79,6 +79,9 @@ class CallController extends ChangeNotifier {
   Timer? _restartTimer;
   Timer? _giveUpTimer;
   Timer? _connectBudget;
+  Timer? _iceCatchup;
+  Completer<void>? _gatherGate;
+  bool _sawPublicIce = false;
   Map<String, dynamic>? _lastOfferPayload;
   final CallLink _link = CallLink();
   bool _restartRequestSent = false;
@@ -120,13 +123,26 @@ class CallController extends ChangeNotifier {
   }
 
   Future<List<Map<String, dynamic>>> _loadIce() async {
-    final conf = await _calls.iceServers();
-    final servers = conf["iceServers"];
-    if (servers is List) {
-      return servers.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    try {
+      final conf = await _calls.iceServers();
+      final servers = conf["iceServers"];
+      if (servers is List && servers.isNotEmpty) {
+        return servers.map((e) {
+          final map = Map<String, dynamic>.from(e as Map);
+          final urls = map["urls"];
+          if (urls is List) {
+            map["urls"] = urls.map((u) => u.toString()).toList();
+          }
+          return map;
+        }).toList();
+      }
+    } catch (e) {
+      debugPrint("[call] ice-servers: $e");
     }
     return [
       {"urls": "stun:stun.l.google.com:19302"},
+      {"urls": "stun:stun1.l.google.com:19302"},
+      {"urls": "stun:stun.cloudflare.com:3478"},
     ];
   }
 
@@ -137,15 +153,33 @@ class CallController extends ChangeNotifier {
 
     final iceServers = await _loadIce();
     if (_disposed || _ending) return;
+    _sawPublicIce = false;
+    _gatherGate = Completer<void>();
     _pc = await createPeerConnection({
       "iceServers": iceServers,
       "sdpSemantics": "unified-plan",
+      "bundlePolicy": "max-bundle",
+      "rtcpMuxPolicy": "require",
+      "iceCandidatePoolSize": 4,
     });
+
+    _pc!.onIceGatheringState = (state) {
+      final name = state.toString().toLowerCase();
+      debugPrint("[call] ice gathering $name");
+      if (name.contains("complete")) _releaseGatherGate();
+    };
 
     _pc!.onIceCandidate = (candidate) {
       if (_disposed || _ending) return;
       final value = candidate.candidate;
       if (value == null || value.isEmpty) return;
+      if (isPublicIceCandidate(value)) {
+        _sawPublicIce = true;
+        debugPrint(
+          "[call] candidat ${value.contains(" typ relay") ? "relais" : "public"}",
+        );
+        _releaseGatherGate();
+      }
       _sendLocalIce({
         "candidate": value,
         "sdpMid": candidate.sdpMid,
@@ -270,6 +304,7 @@ class CallController extends ChangeNotifier {
         _giveUpTimer?.cancel();
         _giveUpTimer = null;
         _stopConnectBudget();
+        _stopIceCatchup();
         _restartRequestSent = false;
         if (phase != CallPhase.active) {
           phase = CallPhase.active;
@@ -412,6 +447,7 @@ class CallController extends ChangeNotifier {
         "offerToReceiveVideo": video,
       });
       await pc.setLocalDescription(offer);
+      await _waitForReachableIce();
       final offerSdp = await _describedSdp(offer);
       final payload = await _seal({
         "iceRestart": true,
@@ -453,6 +489,7 @@ class CallController extends ChangeNotifier {
       "offerToReceiveVideo": video,
     });
     await pc.setLocalDescription(answer);
+    await _waitForReachableIce();
     final answerSdp = await _describedSdp(answer);
     final payload = await _seal({
       "sdp": answerSdp,
@@ -491,6 +528,7 @@ class CallController extends ChangeNotifier {
     _giveUpTimer?.cancel();
     _giveUpTimer = null;
     _stopConnectBudget();
+    _stopIceCatchup();
     _statsTimer?.cancel();
     _statsTimer = null;
   }
@@ -504,11 +542,49 @@ class CallController extends ChangeNotifier {
       if (phase != CallPhase.connecting) return;
       unawaited(endLocal(reason: "failed", notifyPeer: true));
     });
+    _startIceCatchup();
   }
 
   void _stopConnectBudget() {
     _connectBudget?.cancel();
     _connectBudget = null;
+  }
+
+  /// Rattrape les candidats publics manqués tant que l'audio n'est pas là.
+  void _startIceCatchup() {
+    if (_iceCatchup != null || _link.mediaUp || _disposed) return;
+    _iceCatchup = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (_disposed ||
+          _ending ||
+          _link.mediaUp ||
+          phase != CallPhase.connecting) {
+        _stopIceCatchup();
+        return;
+      }
+      unawaited(pullRemoteSignal());
+    });
+  }
+
+  void _stopIceCatchup() {
+    _iceCatchup?.cancel();
+    _iceCatchup = null;
+  }
+
+  void _releaseGatherGate() {
+    final gate = _gatherGate;
+    if (gate != null && !gate.isCompleted) gate.complete();
+  }
+
+  /// Laisse le temps au STUN / relais d'apparaître dans l'offre ou la réponse.
+  Future<void> _waitForReachableIce() async {
+    if (_sawPublicIce) return;
+    final gate = _gatherGate;
+    if (gate == null || gate.isCompleted) return;
+    try {
+      await gate.future.timeout(const Duration(seconds: 6));
+    } on TimeoutException {
+      debugPrint("[call] collecte ICE sans candidat public");
+    }
   }
 
   /// SDP réellement posé (empreinte DTLS comprise), pas le brouillon de createOffer.
@@ -617,6 +693,7 @@ class CallController extends ChangeNotifier {
         "offerToReceiveVideo": video,
       });
       await _pc!.setLocalDescription(offer);
+      await _waitForReachableIce();
 
       final offerSdp = await _describedSdp(offer);
       final sealedOffer = await _seal({"sdp": offerSdp});
@@ -1073,6 +1150,7 @@ class CallController extends ChangeNotifier {
       "offerToReceiveVideo": video,
     });
     await _pc!.setLocalDescription(answer);
+    await _waitForReachableIce();
 
     final answerSdp = await _describedSdp(answer);
     final sealedAnswer = await _seal({"sdp": answerSdp});
@@ -1339,7 +1417,10 @@ class CallController extends ChangeNotifier {
       fromUserId: localUserId,
       payload: payload,
     );
-    if (persistIceOnRest(socketConnected: _socket.isConnected)) {
+    if (persistIceOnRest(
+      socketConnected: _socket.isConnected,
+      candidate: payload["candidate"]?.toString() ?? "",
+    )) {
       unawaited(_postSignal("ice", payload));
     }
   }

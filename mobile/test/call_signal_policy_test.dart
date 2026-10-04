@@ -2,9 +2,28 @@ import "package:flutter_test/flutter_test.dart";
 import "package:klambo_messagerie/features/calls/call_signal_policy.dart";
 
 void main() {
-  test("ICE REST seulement si le socket est coupé", () {
-    expect(persistIceOnRest(socketConnected: true), isFalse);
-    expect(persistIceOnRest(socketConnected: false), isTrue);
+  test("les candidats publics passent aussi en REST", () {
+    const host = "candidate:1 1 UDP 1 192.168.1.2 9 typ host";
+    const srflx = "candidate:1 1 UDP 1 1.2.3.4 9 typ srflx";
+    const relay = "candidate:1 1 UDP 1 5.6.7.8 9 typ relay";
+    expect(
+      persistIceOnRest(socketConnected: true, candidate: host),
+      isFalse,
+    );
+    expect(
+      persistIceOnRest(socketConnected: true, candidate: srflx),
+      isTrue,
+    );
+    expect(
+      persistIceOnRest(socketConnected: true, candidate: relay),
+      isTrue,
+    );
+    expect(
+      persistIceOnRest(socketConnected: false, candidate: host),
+      isTrue,
+    );
+    expect(isPublicIceCandidate(srflx), isTrue);
+    expect(isPublicIceCandidate(host), isFalse);
   });
 
   test("pas de sondage tant que le WebSocket est vivant", () {
