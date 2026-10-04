@@ -14,6 +14,7 @@ import "package:klambo_messagerie/core/wallpaper_prefs.dart";
 import "package:klambo_messagerie/features/auth/phone_login_screen.dart";
 import "package:klambo_messagerie/features/auth/profile_onboarding_screen.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
+import "package:klambo_messagerie/features/calls/call_controller.dart";
 import "package:klambo_messagerie/features/calls/call_hub.dart";
 import "package:klambo_messagerie/features/calls/call_return_bar.dart";
 import "package:klambo_messagerie/features/conversations/conversations_screen.dart";
@@ -79,6 +80,19 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
     // pour recevoir messages + appels dès que l'app n'est plus gelée.
     if (state == AppLifecycleState.resumed) {
       unawaited(BackgroundAlerts.touch());
+    }
+    if ((state == AppLifecycleState.paused ||
+            state == AppLifecycleState.hidden) &&
+        hub != null &&
+        (hub.controller.phase == CallPhase.connecting ||
+            hub.controller.phase == CallPhase.active)) {
+      final peer = hub.controller.active?.peerName?.trim();
+      unawaited(
+        BackgroundAlerts.setCallOngoing(
+          name: (peer != null && peer.isNotEmpty) ? peer : "Klambo",
+          video: hub.controller.active?.kind == "VIDEO",
+        ),
+      );
     }
     if (state == AppLifecycleState.resumed && hub != null) {
       unawaited(hub.consumeNativeCall());

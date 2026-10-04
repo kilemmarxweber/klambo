@@ -12,6 +12,8 @@ import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.net.Uri
@@ -41,6 +43,9 @@ class AlertConnectionService : Service() {
         .build()
     private var socket: WebSocket? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var callAudioHeld = false
+    private var previousAudioMode = AudioManager.MODE_NORMAL
+    private var audioFocusRequest: AudioFocusRequest? = null
     private var stopped = false
     private var attempt = 0
     private var generation = 0
@@ -114,9 +119,56 @@ class AlertConnectionService : Service() {
         socket?.close(1000, "stop")
         socket = null
         client.dispatcher.executorService.shutdown()
+        releaseCallAudio()
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
         super.onDestroy()
+    }
+
+    /** Micro et CPU restent actifs écran verrouillé, le temps de l'appel. */
+    private fun holdCallAudio() {
+        acquireWakeLock()
+        val am = getSystemService(AudioManager::class.java) ?: return
+        if (!callAudioHeld) {
+            previousAudioMode = am.mode
+            callAudioHeld = true
+        }
+        am.mode = AudioManager.MODE_IN_COMMUNICATION
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(attrs)
+                .setAcceptsDelayedFocusGain(true)
+                .build()
+            audioFocusRequest = request
+            am.requestAudioFocus(request)
+        } else {
+            @Suppress("DEPRECATION")
+            am.requestAudioFocus(
+                null,
+                AudioManager.STREAM_VOICE_CALL,
+                AudioManager.AUDIOFOCUS_GAIN,
+            )
+        }
+    }
+
+    private fun releaseCallAudio() {
+        if (!callAudioHeld) return
+        val am = getSystemService(AudioManager::class.java)
+        if (am != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                am.abandonAudioFocus(null)
+            }
+            am.mode = previousAudioMode
+        }
+        audioFocusRequest = null
+        callAudioHeld = false
     }
 
     private fun acquireWakeLock() {
@@ -390,6 +442,7 @@ class AlertConnectionService : Service() {
     }
 
     private fun startMessagingForeground(notification: Notification) {
+        releaseCallAudio()
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(
                 ONGOING_ID,
@@ -402,6 +455,7 @@ class AlertConnectionService : Service() {
     }
 
     private fun startInCallForeground(notification: Notification, video: Boolean) {
+        holdCallAudio()
         if (Build.VERSION.SDK_INT >= 30) {
             var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             if (video) {
@@ -435,6 +489,7 @@ class AlertConnectionService : Service() {
             .setContentText("Appel en cours")
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_CALL)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setContentIntent(launch)
             .build()
     }

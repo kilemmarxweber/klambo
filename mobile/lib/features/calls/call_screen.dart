@@ -4,6 +4,7 @@ import "package:flutter/material.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:flutter_webrtc/flutter_webrtc.dart";
 import "package:klambo_messagerie/core/l10n.dart";
+import "package:klambo_messagerie/features/calls/call_connect_pulse.dart";
 import "package:klambo_messagerie/features/calls/call_controller.dart";
 
 class CallScreen extends ConsumerStatefulWidget {
@@ -200,11 +201,25 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                         ),
                       ),
                       const SizedBox(height: 8),
-                      Text(
-                        _statusLabel(l10n, peerReachable: peerReachable),
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.7),
-                        ),
+                      AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 220),
+                        child: _c.phase == CallPhase.connecting
+                            ? const CallConnectPulse(key: ValueKey("link"))
+                            : Text(
+                                key: ValueKey(
+                                  _statusLabel(
+                                    l10n,
+                                    peerReachable: peerReachable,
+                                  ),
+                                ),
+                                _statusLabel(
+                                  l10n,
+                                  peerReachable: peerReachable,
+                                ),
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.7),
+                                ),
+                              ),
                       ),
                       if (_c.phase == CallPhase.active) ...[
                         const SizedBox(height: 8),

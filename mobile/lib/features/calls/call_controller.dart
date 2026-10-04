@@ -81,6 +81,8 @@ class CallController extends ChangeNotifier {
   Timer? _restartTimer;
   Timer? _giveUpTimer;
   Timer? _connectBudget;
+  Timer? _iceCatchUp;
+  bool _signalPulling = false;
   Map<String, dynamic>? _lastOfferPayload;
   final CallLink _link = CallLink();
   bool _restartRequestSent = false;
@@ -127,15 +129,58 @@ class CallController extends ChangeNotifier {
     _renderersReady = true;
   }
 
+  static const _fallbackIce = [
+    {"urls": "stun:stun.l.google.com:19302"},
+    {"urls": "stun:stun1.l.google.com:19302"},
+    {"urls": "stun:stun.cloudflare.com:3478"},
+    {"urls": "stun:stun.cloudflare.com:53"},
+    {"urls": "stun:stun.nextcloud.com:443"},
+  ];
+
   Future<List<Map<String, dynamic>>> _loadIce() async {
-    final conf = await _calls.iceServers();
-    final servers = conf["iceServers"];
-    if (servers is List) {
-      return servers.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    try {
+      final conf = await _calls.iceServers();
+      final servers = conf["iceServers"];
+      if (servers is List && servers.isNotEmpty) {
+        final parsed = _expandIceServers(servers);
+        if (parsed.isNotEmpty) return parsed;
+      }
+    } catch (e) {
+      debugPrint("[call] ice-servers: $e");
     }
-    return [
-      {"urls": "stun:stun.l.google.com:19302"},
-    ];
+    return _fallbackIce.map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  /// Une URL par entrée : les ports 80 et 443 partent ensemble.
+  List<Map<String, dynamic>> _expandIceServers(List<dynamic> servers) {
+    final out = <Map<String, dynamic>>[];
+    for (final raw in servers) {
+      if (raw is! Map) continue;
+      final map = Map<String, dynamic>.from(raw);
+      final urls = map["urls"];
+      if (urls is List && urls.length > 1) {
+        for (final url in urls) {
+          final copy = Map<String, dynamic>.from(map);
+          copy["urls"] = url.toString();
+          out.add(copy);
+        }
+      } else {
+        if (urls is List && urls.length == 1) {
+          map["urls"] = urls.first.toString();
+        }
+        out.add(map);
+      }
+    }
+    out.sort((a, b) => _iceRank(a["urls"]).compareTo(_iceRank(b["urls"])));
+    return out;
+  }
+
+  int _iceRank(dynamic urls) {
+    final url = urls?.toString() ?? "";
+    if (url.startsWith("stun:")) return 0;
+    if (url.contains(":443")) return 1;
+    if (url.contains(":80")) return 2;
+    return 3;
   }
 
   Future<void> _ensurePeer(bool video) async {
@@ -148,6 +193,9 @@ class CallController extends ChangeNotifier {
     _pc = await createPeerConnection({
       "iceServers": iceServers,
       "sdpSemantics": "unified-plan",
+      "bundlePolicy": "max-bundle",
+      "rtcpMuxPolicy": "require",
+      "iceCandidatePoolSize": 2,
     });
 
     _pc!.onIceCandidate = (candidate) {
@@ -505,7 +553,9 @@ class CallController extends ChangeNotifier {
 
   /// Temps pour établir l'audio après le décroché, sans couper pendant la collecte ICE.
   void _armConnectBudget() {
-    if (_link.mediaUp || _connectBudget != null || _disposed || _ending) return;
+    if (_link.mediaUp || _disposed || _ending) return;
+    _armIceCatchUp();
+    if (_connectBudget != null) return;
     _connectBudget = Timer(CallLink.initialConnectBudget, () {
       _connectBudget = null;
       if (_disposed || _ending || _link.mediaUp) return;
@@ -517,6 +567,29 @@ class CallController extends ChangeNotifier {
   void _stopConnectBudget() {
     _connectBudget?.cancel();
     _connectBudget = null;
+    _stopIceCatchUp();
+  }
+
+  /// Rattrape l'offre, la réponse et les candidats publics pendant
+  /// la connexion, sans attendre qu'un seul port TURN ait fini.
+  void _armIceCatchUp() {
+    if (_iceCatchUp != null || _link.mediaUp || _disposed) return;
+    _iceCatchUp = Timer.periodic(const Duration(milliseconds: 1500), (_) {
+      if (_disposed || _ending || _link.mediaUp || phase != CallPhase.connecting) {
+        _stopIceCatchUp();
+        return;
+      }
+      if (_signalPulling) return;
+      _signalPulling = true;
+      unawaited(
+        pullRemoteSignal().whenComplete(() => _signalPulling = false),
+      );
+    });
+  }
+
+  void _stopIceCatchUp() {
+    _iceCatchUp?.cancel();
+    _iceCatchUp = null;
   }
 
   /// SDP réellement posé (empreinte DTLS comprise), pas le brouillon de createOffer.

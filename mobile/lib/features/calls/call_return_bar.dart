@@ -88,7 +88,7 @@ class _CallReturnBar extends ConsumerWidget {
       return "$name · ${l10n.callPeerAway}";
     }
     if (controller.phase == CallPhase.connecting) {
-      return "$name · ${l10n.callConnecting}";
+      return name;
     }
     if (controller.phase == CallPhase.ringingIn) {
       return "$name · ${l10n.callRingingIn}";

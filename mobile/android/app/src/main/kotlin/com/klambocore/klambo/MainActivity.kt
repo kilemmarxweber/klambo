@@ -1,7 +1,9 @@
 package com.klambocore.klambo
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -75,6 +77,41 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, LOCK_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                if (call.method == "setLockScreenVisible") {
+                    val visible = call.argument<Boolean>("visible") == true
+                    setCallHoldsScreen(visible)
+                    result.success(null)
+                } else {
+                    result.notImplemented()
+                }
+            }
+    }
+
+    /** Écran allumé seulement pendant un appel qui passe. Sinon, verrouillage normal. */
+    private fun setCallHoldsScreen(hold: Boolean) {
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(hold)
+            setTurnScreenOn(hold)
+        } else if (hold) {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            window.clearFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+            )
+        }
+        if (hold) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -106,5 +143,6 @@ class MainActivity : FlutterActivity() {
 
     companion object {
         private const val CHANNEL = "klambo/background"
+        private const val LOCK_CHANNEL = "com.klambocore.klambo/lock_screen"
     }
 }

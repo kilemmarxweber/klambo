@@ -8,6 +8,7 @@ import "package:flutter/services.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:klambo_messagerie/core/alert_prefs.dart";
 import "package:klambo_messagerie/core/background_alerts.dart";
+import "package:klambo_messagerie/core/lock_screen.dart";
 import "package:klambo_messagerie/core/media_urls.dart";
 import "package:klambo_messagerie/core/notification_service.dart";
 import "package:klambo_messagerie/core/sound_service.dart";
@@ -470,7 +471,10 @@ class CallHub {
   void _onCallPhaseChanged() {
     _scheduleCallFallback();
     final phase = controller.phase;
-    if (phase == CallPhase.connecting || phase == CallPhase.active) {
+    final callLive =
+        phase == CallPhase.connecting || phase == CallPhase.active;
+    unawaited(setLockScreenVisible(callLive));
+    if (callLive) {
       final peer = controller.active?.peerName?.trim();
       final name = (peer != null && peer.isNotEmpty) ? peer : "Klambo";
       unawaited(
