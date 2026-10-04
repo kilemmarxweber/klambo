@@ -429,8 +429,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _presencePoll?.cancel();
     _messagePoll?.cancel();
     _presence?.removeListener(_onPresenceChanged);
-    if (_activeConvCtrl?.state == widget.conversationId) {
-      _activeConvCtrl?.state = null;
+    final activeConv = _activeConvCtrl;
+    final conversationId = widget.conversationId;
+    if (activeConv?.state == conversationId) {
+      Future<void>(() {
+        if (activeConv?.state == conversationId) activeConv?.state = null;
+      });
     }
     _input.dispose();
     _scroll.dispose();
