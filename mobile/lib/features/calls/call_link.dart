@@ -23,31 +23,40 @@ CallIceSignal parseIceSignal(String raw) {
 }
 
 /// Un seul restart après échec, puis raccroché. Un succès remet le compteur à zéro.
+///
+/// `disconnected` / `failed` avant le premier média sont normaux (collecte ICE).
+/// Les traiter comme une coupure relançait l'appel et le coupait vers 15 s.
 class CallLink {
   static const maxRestarts = 1;
   static const disconnectGrace = Duration(seconds: 5);
+  static const initialConnectBudget = Duration(seconds: 30);
 
   int restartAttempts = 0;
   bool restartInFlight = false;
   bool restartArmed = false;
   bool mediaUp = false;
+  /// Vrai dès le premier ICE connecté, même si le lien retombe ensuite.
+  bool hadMedia = false;
 
   CallLinkAction onIce(CallIceSignal signal) {
     switch (signal) {
       case CallIceSignal.connected:
       case CallIceSignal.completed:
         mediaUp = true;
+        hadMedia = true;
         restartInFlight = false;
         restartArmed = false;
         restartAttempts = 0;
         return CallLinkAction.mediaUp;
       case CallIceSignal.disconnected:
+        if (!hadMedia) return CallLinkAction.none;
         mediaUp = false;
         if (restartInFlight || restartArmed) return CallLinkAction.none;
         if (restartAttempts >= maxRestarts) return CallLinkAction.endFailed;
         restartArmed = true;
         return CallLinkAction.scheduleRestart;
       case CallIceSignal.failed:
+        if (!hadMedia) return CallLinkAction.none;
         mediaUp = false;
         restartArmed = false;
         if (restartInFlight) return CallLinkAction.none;
@@ -80,11 +89,12 @@ class CallLink {
     restartInFlight = false;
     restartArmed = false;
     mediaUp = false;
+    hadMedia = false;
   }
 
   /// Changement Wi-Fi / données pendant que le média est négocié ou établi.
   CallLinkAction onNetworkChanged({required bool mediaPhase}) {
-    if (!mediaPhase) return CallLinkAction.none;
+    if (!mediaPhase || !hadMedia) return CallLinkAction.none;
     if (restartInFlight || restartArmed) return CallLinkAction.none;
     if (restartAttempts >= maxRestarts) return CallLinkAction.none;
     restartArmed = true;

@@ -27,8 +27,17 @@ void main() {
     expect(markActiveOnAnswer(mediaAlreadyUp: true), isTrue);
   });
 
+  test("avant le premier média, une alerte ICE ne coupe pas l'appel", () {
+    final link = CallLink();
+    expect(link.onIce(CallIceSignal.disconnected), CallLinkAction.none);
+    expect(link.onIce(CallIceSignal.failed), CallLinkAction.none);
+    expect(link.mediaUp, isFalse);
+  });
+
   test("disconnected attend, failed relance une fois puis abandonne", () {
     final link = CallLink();
+    link.mediaUp = true;
+    link.hadMedia = true;
     expect(link.onIce(CallIceSignal.disconnected), CallLinkAction.scheduleRestart);
     expect(link.onIce(CallIceSignal.disconnected), CallLinkAction.none);
     expect(link.takeRestart(), CallLinkAction.restartNow);
@@ -40,6 +49,7 @@ void main() {
 
   test("un succès autorise une nouvelle reprise plus tard", () {
     final link = CallLink();
+    expect(link.onIce(CallIceSignal.connected), CallLinkAction.mediaUp);
     expect(link.onIce(CallIceSignal.failed), CallLinkAction.restartNow);
     expect(link.takeRestart(), CallLinkAction.restartNow);
     expect(link.onIce(CallIceSignal.completed), CallLinkAction.mediaUp);
@@ -53,7 +63,12 @@ void main() {
       link.onNetworkChanged(mediaPhase: false),
       CallLinkAction.none,
     );
+    expect(
+      link.onNetworkChanged(mediaPhase: true),
+      CallLinkAction.none,
+    );
     link.mediaUp = true;
+    link.hadMedia = true;
     expect(
       link.onNetworkChanged(mediaPhase: true),
       CallLinkAction.scheduleRestart,

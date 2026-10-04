@@ -77,6 +77,7 @@ class CallController extends ChangeNotifier {
   Timer? _ringTimeout;
   Timer? _restartTimer;
   Timer? _giveUpTimer;
+  Timer? _connectBudget;
   Map<String, dynamic>? _lastOfferPayload;
   final CallLink _link = CallLink();
   bool _restartRequestSent = false;
@@ -269,6 +270,7 @@ class CallController extends ChangeNotifier {
         _restartTimer = null;
         _giveUpTimer?.cancel();
         _giveUpTimer = null;
+        _stopConnectBudget();
         _restartRequestSent = false;
         if (phase != CallPhase.active) {
           phase = CallPhase.active;
@@ -284,7 +286,7 @@ class CallController extends ChangeNotifier {
         _armRestart(Duration.zero);
         break;
       case CallLinkAction.endFailed:
-        unawaited(endLocal(reason: "failed"));
+        unawaited(endLocal(reason: "failed", notifyPeer: true));
         break;
       case CallLinkAction.none:
         break;
@@ -312,7 +314,7 @@ class CallController extends ChangeNotifier {
     }
     final action = _link.takeRestart();
     if (action == CallLinkAction.endFailed) {
-      await endLocal(reason: "failed");
+      await endLocal(reason: "failed", notifyPeer: true);
       return;
     }
     if (action != CallLinkAction.restartNow) return;
@@ -337,7 +339,7 @@ class CallController extends ChangeNotifier {
     _giveUpTimer = Timer(const Duration(seconds: 12), () {
       _giveUpTimer = null;
       if (_disposed || _ending || _link.mediaUp) return;
-      unawaited(endLocal(reason: "failed"));
+      unawaited(endLocal(reason: "failed", notifyPeer: true));
     });
   }
 
@@ -361,9 +363,10 @@ class CallController extends ChangeNotifier {
         "offerToReceiveVideo": video,
       });
       await pc.setLocalDescription(offer);
+      final offerSdp = await _describedSdp(offer);
       final payload = await _seal({
         "iceRestart": true,
-        "sdp": {"type": offer.type, "sdp": offer.sdp},
+        "sdp": offerSdp,
       });
       _socket.sendCallSignal(
         type: "call.renegotiate",
@@ -377,7 +380,7 @@ class CallController extends ChangeNotifier {
     } catch (e) {
       debugPrint("[call] ice restart failed: $e");
       _link.disarm();
-      await endLocal(reason: "failed");
+      await endLocal(reason: "failed", notifyPeer: true);
     }
   }
 
@@ -401,7 +404,7 @@ class CallController extends ChangeNotifier {
       "offerToReceiveVideo": video,
     });
     await pc.setLocalDescription(answer);
-    final answerSdp = {"type": answer.type, "sdp": answer.sdp};
+    final answerSdp = await _describedSdp(answer);
     final payload = await _seal({
       "sdp": answerSdp,
       "iceRestart": true,
@@ -438,8 +441,44 @@ class CallController extends ChangeNotifier {
     _restartTimer = null;
     _giveUpTimer?.cancel();
     _giveUpTimer = null;
+    _stopConnectBudget();
     _statsTimer?.cancel();
     _statsTimer = null;
+  }
+
+  /// Temps pour établir l'audio après le décroché, sans couper pendant la collecte ICE.
+  void _armConnectBudget() {
+    if (_link.mediaUp || _connectBudget != null || _disposed || _ending) return;
+    _connectBudget = Timer(CallLink.initialConnectBudget, () {
+      _connectBudget = null;
+      if (_disposed || _ending || _link.mediaUp) return;
+      if (phase != CallPhase.connecting) return;
+      unawaited(endLocal(reason: "failed", notifyPeer: true));
+    });
+  }
+
+  void _stopConnectBudget() {
+    _connectBudget?.cancel();
+    _connectBudget = null;
+  }
+
+  /// SDP réellement posé (empreinte DTLS comprise), pas le brouillon de createOffer.
+  Future<Map<String, dynamic>> _describedSdp(
+    RTCSessionDescription created,
+  ) async {
+    RTCSessionDescription? local;
+    try {
+      local = await _pc?.getLocalDescription();
+    } catch (e) {
+      debugPrint("[call] getLocalDescription: $e");
+    }
+    final sdp = (local?.sdp != null && local!.sdp!.isNotEmpty)
+        ? local.sdp
+        : created.sdp;
+    final type = (local?.type != null && local!.type!.isNotEmpty)
+        ? local.type
+        : created.type;
+    return {"type": type, "sdp": sdp};
   }
 
   void _ensureStats() {
@@ -530,7 +569,7 @@ class CallController extends ChangeNotifier {
       });
       await _pc!.setLocalDescription(offer);
 
-      final offerSdp = {"type": offer.type, "sdp": offer.sdp};
+      final offerSdp = await _describedSdp(offer);
       final sealedOffer = await _seal({"sdp": offerSdp});
       final created = await _calls.startCall(
         organizationId: organizationId,
@@ -861,7 +900,10 @@ class CallController extends ChangeNotifier {
             ? Map<String, dynamic>.from(answer)
             : <String, dynamic>{"sdp": sdp};
         if (!await _guard(call.peerUserId, container)) return;
-        if (phase == CallPhase.ringingOut) phase = CallPhase.connecting;
+        if (phase == CallPhase.ringingOut) {
+          phase = CallPhase.connecting;
+          _armConnectBudget();
+        }
         await _pc!.setRemoteDescription(
           RTCSessionDescription(
             sdp["sdp"] as String,
@@ -874,6 +916,7 @@ class CallController extends ChangeNotifier {
           phase = CallPhase.active;
         } else {
           phase = CallPhase.connecting;
+          _armConnectBudget();
         }
         _stopOfferResend();
         _stopRingTimeout();
@@ -939,7 +982,7 @@ class CallController extends ChangeNotifier {
       );
       return true;
     } on CallIdentityException {
-      await endLocal(reason: "identity");
+      await endLocal(reason: "identity", notifyPeer: true);
       return false;
     }
   }
@@ -948,6 +991,7 @@ class CallController extends ChangeNotifier {
     if (active == null || phase != CallPhase.ringingIn) return;
     error = null;
     phase = CallPhase.connecting;
+    _armConnectBudget();
     _safeNotify();
 
     final video = active!.kind == "VIDEO";
@@ -983,7 +1027,7 @@ class CallController extends ChangeNotifier {
     });
     await _pc!.setLocalDescription(answer);
 
-    final answerSdp = {"type": answer.type, "sdp": answer.sdp};
+    final answerSdp = await _describedSdp(answer);
     final sealedAnswer = await _seal({"sdp": answerSdp});
     final dtls = sealedAnswer["dtls"] is Map
         ? Map<String, dynamic>.from(sealedAnswer["dtls"] as Map)
@@ -1010,6 +1054,7 @@ class CallController extends ChangeNotifier {
     phase = markActiveOnAnswer(mediaAlreadyUp: _link.mediaUp)
         ? CallPhase.active
         : CallPhase.connecting;
+    if (phase == CallPhase.connecting) _armConnectBudget();
     _stopOfferResend();
     _stopRingTimeout();
     _safeNotify();
@@ -1059,13 +1104,33 @@ class CallController extends ChangeNotifier {
     await endLocal(reason: "hangup");
   }
 
-  Future<void> endLocal({String? reason}) async {
+  Future<void> endLocal({String? reason, bool notifyPeer = false}) async {
     if (_ending || _disposed) return;
     if (phase == CallPhase.idle && active == null) return;
+    final call = active;
     _stopOfferResend();
     _stopRingTimeout();
     _cancelLinkTimers();
     _ending = true;
+    if (notifyPeer && call != null) {
+      try {
+        _socket.sendCallSignal(
+          type: "call.hangup",
+          organizationId: call.organizationId,
+          callId: call.callId,
+          toUserId: call.peerUserId,
+          fromUserId: localUserId,
+        );
+      } catch (_) {}
+      try {
+        await _calls.callAction(
+          organizationId: call.organizationId,
+          callId: call.callId,
+          action: "hangup",
+          endReason: reason,
+        );
+      } catch (_) {}
+    }
     try {
       phase = CallPhase.ended;
       _safeNotify();
@@ -1142,7 +1207,10 @@ class CallController extends ChangeNotifier {
           final sdp = Map<String, dynamic>.from(p!["sdp"] as Map);
           if (!await _guard(active!.peerUserId, p)) return;
           try {
-            if (phase == CallPhase.ringingOut) phase = CallPhase.connecting;
+            if (phase == CallPhase.ringingOut) {
+              phase = CallPhase.connecting;
+              _armConnectBudget();
+            }
             await _pc?.setRemoteDescription(
               RTCSessionDescription(
                 sdp["sdp"] as String,
@@ -1154,6 +1222,7 @@ class CallController extends ChangeNotifier {
             phase = markActiveOnAnswer(mediaAlreadyUp: _link.mediaUp)
                 ? CallPhase.active
                 : CallPhase.connecting;
+            if (phase == CallPhase.connecting) _armConnectBudget();
             _stopOfferResend();
             _stopRingTimeout();
             _safeNotify();
