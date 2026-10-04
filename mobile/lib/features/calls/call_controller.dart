@@ -69,6 +69,11 @@ class CallController extends ChangeNotifier {
   bool speakerOn = false;
   /// host, srflx, relay ou unknown — renseigné pendant l'appel.
   String icePath = "unknown";
+  /// Vrai quand l'écran d'appel est réduit : la voix continue, la barre reste.
+  bool minimized = false;
+  DateTime? _connectedAt;
+  Duration callElapsed = Duration.zero;
+  Timer? _callClock;
   final List<RTCIceCandidate> _pendingRemoteIce = [];
   final List<Map<String, dynamic>> _pendingLocalIce = [];
   final Set<String> _appliedRemoteIce = {};
@@ -97,6 +102,47 @@ class CallController extends ChangeNotifier {
       phase != CallPhase.idle && phase != CallPhase.ended;
 
   bool get isDisposed => _disposed;
+
+  void setMinimized(bool value) {
+    if (_disposed || minimized == value) return;
+    minimized = value;
+    _safeNotify();
+  }
+
+  String get callClockLabel {
+    final total = callElapsed.inSeconds;
+    final h = total ~/ 3600;
+    final m = (total ~/ 60) % 60;
+    final s = total % 60;
+    final mm = m.toString().padLeft(2, "0");
+    final ss = s.toString().padLeft(2, "0");
+    if (h > 0) return "$h:$mm:$ss";
+    return "$mm:$ss";
+  }
+
+  void _syncCallClock() {
+    if (phase == CallPhase.active) {
+      _connectedAt ??= DateTime.now();
+      callElapsed = DateTime.now().difference(_connectedAt!);
+      _callClock ??= Timer.periodic(const Duration(seconds: 1), (_) {
+        if (_disposed || _connectedAt == null || phase != CallPhase.active) {
+          _stopCallClock();
+          return;
+        }
+        callElapsed = DateTime.now().difference(_connectedAt!);
+        _safeNotify();
+      });
+      return;
+    }
+    _stopCallClock();
+  }
+
+  void _stopCallClock() {
+    _callClock?.cancel();
+    _callClock = null;
+    _connectedAt = null;
+    callElapsed = Duration.zero;
+  }
 
   void setStatusHint(String? message) {
     error = message;
@@ -446,6 +492,7 @@ class CallController extends ChangeNotifier {
         "offerToReceiveAudio": true,
         "offerToReceiveVideo": video,
       });
+      _resetIceGatherGate();
       await pc.setLocalDescription(offer);
       await _waitForReachableIce();
       final offerSdp = await _describedSdp(offer);
@@ -488,6 +535,7 @@ class CallController extends ChangeNotifier {
       "offerToReceiveAudio": true,
       "offerToReceiveVideo": video,
     });
+    _resetIceGatherGate();
     await pc.setLocalDescription(answer);
     await _waitForReachableIce();
     final answerSdp = await _describedSdp(answer);
@@ -573,6 +621,12 @@ class CallController extends ChangeNotifier {
   void _releaseGatherGate() {
     final gate = _gatherGate;
     if (gate != null && !gate.isCompleted) gate.complete();
+  }
+
+  /// Nouvelle collecte (ex. ICE restart) : ne pas réutiliser l'état initial.
+  void _resetIceGatherGate() {
+    _sawPublicIce = false;
+    _gatherGate = Completer<void>();
   }
 
   /// Laisse le temps au STUN / relais d'apparaître dans l'offre ou la réponse.
@@ -1267,6 +1321,7 @@ class CallController extends ChangeNotifier {
         await Future<void>.delayed(const Duration(milliseconds: 900));
         if (_disposed) return;
       }
+      minimized = false;
       phase = CallPhase.idle;
       active = null;
       error = reason;
@@ -1447,6 +1502,7 @@ class CallController extends ChangeNotifier {
 
   void _safeNotify() {
     if (_disposed) return;
+    _syncCallClock();
     try {
       notifyListeners();
     } catch (_) {}
@@ -1526,6 +1582,8 @@ class CallController extends ChangeNotifier {
     } catch (_) {}
     _pc = null;
     _link.reset();
+    _stopCallClock();
+    minimized = false;
     phase = CallPhase.idle;
     active = null;
   }

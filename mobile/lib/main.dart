@@ -15,6 +15,7 @@ import "package:klambo_messagerie/features/auth/phone_login_screen.dart";
 import "package:klambo_messagerie/features/auth/profile_onboarding_screen.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
 import "package:klambo_messagerie/features/calls/call_hub.dart";
+import "package:klambo_messagerie/features/calls/call_return_bar.dart";
 import "package:klambo_messagerie/features/conversations/conversations_screen.dart";
 
 Future<void> main() async {
@@ -110,6 +111,9 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
       theme: buildEteyeloTheme(brightness: Brightness.light),
       darkTheme: buildEteyeloTheme(brightness: Brightness.dark),
       themeMode: ThemePrefs.instance.mode,
+      builder: (context, child) {
+        return CallShell(child: child ?? const SizedBox.shrink());
+      },
       home: const RootGate(),
     );
   }

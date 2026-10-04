@@ -1,5 +1,3 @@
-import "dart:async";
-
 import "package:flutter/material.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:flutter_webrtc/flutter_webrtc.dart";
@@ -19,67 +17,43 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   late final CallController _c;
   bool _actionBusy = false;
   bool _popScheduled = false;
-  DateTime? _connectedAt;
-  Duration _elapsed = Duration.zero;
-  Timer? _clock;
 
   @override
   void initState() {
     super.initState();
     _c = widget.controller;
     _c.addListener(_onUpdate);
-    if (_c.phase == CallPhase.active) _startClock();
   }
 
-  void _startClock() {
-    _connectedAt ??= DateTime.now();
-    _elapsed = DateTime.now().difference(_connectedAt!);
-    _clock ??= Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted || _connectedAt == null) return;
-      setState(() {
-        _elapsed = DateTime.now().difference(_connectedAt!);
-      });
-    });
-  }
-
-  void _stopClock() {
-    _clock?.cancel();
-    _clock = null;
-    _connectedAt = null;
-    _elapsed = Duration.zero;
-  }
-
-  String get _clockLabel {
-    final total = _elapsed.inSeconds;
-    final h = total ~/ 3600;
-    final m = (total ~/ 60) % 60;
-    final s = total % 60;
-    final mm = m.toString().padLeft(2, "0");
-    final ss = s.toString().padLeft(2, "0");
-    if (h > 0) return "$h:$mm:$ss";
-    return "$mm:$ss";
-  }
+  bool get _canLeave =>
+      _c.minimized ||
+      _c.phase == CallPhase.idle ||
+      _c.phase == CallPhase.ended;
 
   void _onUpdate() {
     if (!mounted || _c.isDisposed) return;
-    if (_c.phase == CallPhase.active) {
-      _startClock();
-    } else if (_c.phase == CallPhase.idle || _c.phase == CallPhase.ended) {
-      _stopClock();
-    }
-    if (_c.phase == CallPhase.idle) {
+    if (_c.phase == CallPhase.idle || _c.minimized) {
       _schedulePop();
       return;
     }
     setState(() {});
   }
 
+  void _minimize() {
+    if (_c.phase == CallPhase.idle || _c.phase == CallPhase.ended) return;
+    _c.setMinimized(true);
+    _schedulePop();
+  }
+
   void _schedulePop() {
     if (_popScheduled || !mounted) return;
     _popScheduled = true;
+    setState(() {});
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      Navigator.of(context).maybePop();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        Navigator.of(context).pop();
+      });
     });
   }
 
@@ -97,7 +71,6 @@ class _CallScreenState extends ConsumerState<CallScreen> {
 
   @override
   void dispose() {
-    _stopClock();
     if (!_c.isDisposed) {
       _c.removeListener(_onUpdate);
     }
@@ -148,11 +121,10 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     final name = _c.active?.peerName ?? l10n.callPeerFallback;
 
     return PopScope(
-      canPop: _c.phase == CallPhase.idle || _c.phase == CallPhase.ended,
-      onPopInvokedWithResult: (didPop, _) async {
+      canPop: _canLeave,
+      onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
-        await _safeAction(() => _c.hangup());
-        if (mounted) _schedulePop();
+        _minimize();
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF0B1F17),
@@ -202,7 +174,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                       if (_c.phase == CallPhase.active) ...[
                         const SizedBox(height: 8),
                         Text(
-                          _clockLabel,
+                          _c.callClockLabel,
                           style: const TextStyle(
                             color: Colors.white,
                             fontSize: 20,
@@ -234,7 +206,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                   child: Column(
                     children: [
                       Text(
-                        _clockLabel,
+                        _c.callClockLabel,
                         textAlign: TextAlign.center,
                         style: const TextStyle(
                           color: Colors.white,
@@ -280,6 +252,19 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                 child: _c.phase == CallPhase.ringingIn
                     ? _incomingActions(l10n)
                     : _inCallActions(l10n),
+              ),
+              Positioned(
+                top: 0,
+                left: 0,
+                child: IconButton(
+                  tooltip: l10n.callMinimize,
+                  onPressed: _minimize,
+                  icon: const Icon(
+                    Icons.keyboard_arrow_down,
+                    color: Colors.white,
+                    size: 32,
+                  ),
+                ),
               ),
             ],
           ),

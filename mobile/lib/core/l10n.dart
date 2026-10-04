@@ -435,6 +435,9 @@ class L10n {
   String get callSpeaker => _t("Haut-parleur", "Speaker", "Altifalante");
   String get callCamera => _t("Caméra", "Camera", "Câmara");
   String get callHangup => _t("Raccrocher", "Hang up", "Desligar");
+  String get callMinimize => _t("Réduire", "Minimize", "Minimizar");
+  String get callReturn =>
+      _t("Retour à l'appel", "Return to call", "Voltar à chamada");
 }
 
 class LocaleController extends ChangeNotifier {

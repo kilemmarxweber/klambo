@@ -107,17 +107,7 @@ class CallHub {
     controller.addListener(_onCallPhaseChanged);
     controller.onIncomingRing = (_) {
       unawaited(_alertIncomingCall());
-      final nav = navigatorKey.currentState;
-      if (nav == null) return;
-      final route = ModalRoute.of(nav.context);
-      if (route?.settings.name == "/call") return;
-      nav.push(
-        MaterialPageRoute(
-          settings: const RouteSettings(name: "/call"),
-          fullscreenDialog: true,
-          builder: (_) => CallScreen(controller: controller),
-        ),
-      );
+      showCallScreen();
     };
     socket.onMessageEvent = _onMessageEvent;
     socket.onPresenceEvent = presence.applyEvent;
@@ -576,20 +566,33 @@ class CallHub {
           "Contact hors ligne — il doit avoir Klambo ouvert pour décrocher",
         );
       }
-      final nav = navigatorKey.currentState;
-      if (nav == null) return;
-      nav.push(
-        MaterialPageRoute(
-          settings: const RouteSettings(name: "/call"),
-          fullscreenDialog: true,
-          builder: (_) => CallScreen(controller: controller),
-        ),
-      );
+      showCallScreen();
     } catch (e) {
       debugPrint("[hub] startOutgoing failed: $e");
       await SoundService.instance.stopRingtone();
       rethrow;
     }
+  }
+
+  /// Rouvre l'écran d'appel sans en créer un second.
+  void showCallScreen() {
+    if (controller.isDisposed || !controller.isBusy) return;
+    controller.setMinimized(false);
+    final nav = navigatorKey.currentState;
+    if (nav == null) return;
+    var visible = false;
+    nav.popUntil((route) {
+      visible = route.settings.name == "/call";
+      return true;
+    });
+    if (visible) return;
+    nav.push(
+      MaterialPageRoute(
+        settings: const RouteSettings(name: "/call"),
+        fullscreenDialog: true,
+        builder: (_) => CallScreen(controller: controller),
+      ),
+    );
   }
 
   void dispose() {
