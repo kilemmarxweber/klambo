@@ -1033,10 +1033,7 @@ class CallController extends ChangeNotifier {
     if (sdp == null || _pc == null) return;
     if (!restart) _applyingAnswer = true;
     try {
-      if (!await _guard(active!.peerUserId, container)) {
-        if (!restart) _applyingAnswer = false;
-        return;
-      }
+      if (!await _guard(active!.peerUserId, container)) return;
       if (_disposed || _ending || _pc == null) return;
       if (!restart && _answerApplied) return;
       if (phase == CallPhase.ringingOut) {
@@ -1059,8 +1056,10 @@ class CallController extends ChangeNotifier {
       _stopRingTimeout();
       _safeNotify();
     } catch (e) {
-      if (!restart && !_answerApplied) _applyingAnswer = false;
       debugPrint("[call] answer apply failed: $e");
+    } finally {
+      // Libérer le verrou si on n'a pas posé la réponse (return anticipé / erreur).
+      if (!restart && !_answerApplied) _applyingAnswer = false;
     }
   }
 
