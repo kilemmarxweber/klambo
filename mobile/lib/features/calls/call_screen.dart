@@ -25,14 +25,9 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     _c.addListener(_onUpdate);
   }
 
-  bool get _canLeave =>
-      _c.minimized ||
-      _c.phase == CallPhase.idle ||
-      _c.phase == CallPhase.ended;
-
   void _onUpdate() {
     if (!mounted || _c.isDisposed) return;
-    if (_c.phase == CallPhase.idle || _c.minimized) {
+    if (_c.phase == CallPhase.idle) {
       _schedulePop();
       return;
     }
@@ -40,9 +35,10 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   }
 
   void _minimize() {
-    if (_c.phase == CallPhase.idle || _c.phase == CallPhase.ended) return;
+    if (!_c.isBusy) return;
     _c.setMinimized(true);
-    _schedulePop();
+    if (!mounted) return;
+    Navigator.of(context).pop();
   }
 
   void _schedulePop() {
@@ -52,7 +48,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        Navigator.of(context).pop();
+        Navigator.of(context).maybePop();
       });
     });
   }
@@ -121,10 +117,13 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     final name = _c.active?.peerName ?? l10n.callPeerFallback;
 
     return PopScope(
-      canPop: _canLeave,
+      canPop: true,
       onPopInvokedWithResult: (didPop, _) {
-        if (didPop) return;
-        _minimize();
+        if (!didPop) {
+          _minimize();
+          return;
+        }
+        if (_c.isBusy) _c.setMinimized(true);
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF0B1F17),

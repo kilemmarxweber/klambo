@@ -1,6 +1,7 @@
 package com.klambocore.klambo
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -95,13 +96,31 @@ class MainActivity : FlutterActivity() {
 
     override fun onPause() {
         AppVisibility.inForeground = false
+        // Ne pas garder la fenêtre d'appel collée à l'écran verrouillé :
+        // la surface vidéo fige le téléphone.
+        releaseLockScreen()
         super.onPause()
+    }
+
+    private fun releaseLockScreen() {
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(false)
+            setTurnScreenOn(false)
+        }
+    }
+
+    private fun showOverLockScreen() {
+        if (Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
     }
 
     private fun captureCall(intent: Intent?) {
         val raw = intent?.getStringExtra(AlertConnectionService.EXTRA_CALL) ?: return
         pendingCall = raw
         autoAccept = intent.getBooleanExtra(AlertConnectionService.EXTRA_ACCEPT, false)
+        showOverLockScreen()
     }
 
     companion object {

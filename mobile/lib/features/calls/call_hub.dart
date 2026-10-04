@@ -574,6 +574,18 @@ class CallHub {
     }
   }
 
+  /// Range l'écran d'appel sans couper le média.
+  /// Le retour Android, le balayage vers l'accueil et le verrouillage passent ici.
+  void minimizeCall() {
+    if (controller.isDisposed || !controller.isBusy || controller.minimized) {
+      return;
+    }
+    controller.setMinimized(true);
+    final nav = navigatorKey.currentState;
+    if (nav == null) return;
+    nav.popUntil((route) => route.settings.name != "/call");
+  }
+
   /// Rouvre l'écran d'appel sans en créer un second.
   void showCallScreen() {
     if (controller.isDisposed || !controller.isBusy) return;

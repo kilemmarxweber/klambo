@@ -93,6 +93,14 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
         ));
       }
     }
+    // Accueil, autre appli ou écran verrouillé : on détache la vidéo
+    // tout de suite. Sinon la surface WebRTC fige l'activité.
+    if (!kIsWeb &&
+        hub != null &&
+        (state == AppLifecycleState.hidden ||
+            state == AppLifecycleState.paused)) {
+      hub.minimizeCall();
+    }
     // Uniquement kill process / detach — pas `hidden` (Chrome le tire souvent
     // et coupait l'appel + disposait le media en plein ring).
     if (state == AppLifecycleState.detached) {
