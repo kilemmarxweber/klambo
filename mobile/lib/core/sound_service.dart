@@ -5,8 +5,8 @@ import "package:flutter/foundation.dart";
 import "package:flutter/services.dart";
 import "package:klambo_messagerie/core/alert_prefs.dart";
 
-/// Sons in-app : bip message + sonnerie.
-/// Android : sonnerie par défaut du téléphone. Ailleurs : fichier WAV.
+/// Sons in-app : bip message, sonnerie reçue, bip d'appel lancé.
+/// B (entrant) : sonnerie des réglages Android. A (sortant) : bip continu.
 class SoundService {
   SoundService._();
   static final SoundService instance = SoundService._();
@@ -160,7 +160,9 @@ class SoundService {
     }
   }
 
-  Future<void> startRingtone() async {
+  /// [incoming] : B reçoit l'appel (sonnerie des réglages).
+  /// Sinon A a lancé l'appel (bip continu).
+  Future<void> startRingtone({bool incoming = false}) async {
     if (!AlertPrefs.instance.soundsEnabled) return;
     if (_ringing) return;
     _ringing = true;
@@ -170,7 +172,7 @@ class SoundService {
       await HapticFeedback.heavyImpact();
     } catch (_) {}
 
-    if (_android) {
+    if (incoming && _android) {
       try {
         await _androidRing.invokeMethod<void>("startSystemRing");
         _systemRing = true;
@@ -182,17 +184,27 @@ class SoundService {
       }
     }
 
+    if (incoming) {
+      await _playSystemCue();
+      _ringFallbackTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+        if (!_ringing) return;
+        unawaited(_playSystemCue());
+        unawaited(HapticFeedback.lightImpact());
+      });
+      return;
+    }
+
     var assetOk = false;
     try {
       final p = await _ringPlayer();
       await p.stop();
       await p.setReleaseMode(ReleaseMode.loop);
-      await p.setVolume(1.0);
-      await p.play(AssetSource("sounds/ringtone.wav"), volume: 1.0);
+      await p.setVolume(0.85);
+      await p.play(AssetSource("sounds/ringtone.wav"), volume: 0.85);
       assetOk = true;
-      debugPrint("[sound] ringtone asset playing");
+      debugPrint("[sound] outgoing beep playing");
     } catch (e) {
-      debugPrint("[sound] ringtone asset failed: $e");
+      debugPrint("[sound] outgoing beep failed: $e");
       await _resetRingPlayer();
     }
 

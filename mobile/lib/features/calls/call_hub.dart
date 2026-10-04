@@ -289,7 +289,7 @@ class CallHub {
   }
 
   Future<void> _alertIncomingCall() async {
-    unawaited(SoundService.instance.startRingtone());
+    unawaited(SoundService.instance.startRingtone(incoming: true));
     final peer = controller.active?.peerName?.trim();
     final name = (peer != null && peer.isNotEmpty) ? peer : "Klambo";
     unawaited(
@@ -493,7 +493,11 @@ class CallHub {
       }
     }
     if (phase == CallPhase.ringingIn || phase == CallPhase.ringingOut) {
-      unawaited(SoundService.instance.startRingtone());
+      unawaited(
+        SoundService.instance.startRingtone(
+          incoming: phase == CallPhase.ringingIn,
+        ),
+      );
       if (phase == CallPhase.ringingIn) {
         final peer = controller.active?.peerName?.trim();
         final name = (peer != null && peer.isNotEmpty) ? peer : "Klambo";
@@ -550,7 +554,7 @@ class CallHub {
           "[hub] callee $calleeId appears offline — offer will still be sent/retried",
         );
       }
-      unawaited(SoundService.instance.startRingtone());
+      unawaited(SoundService.instance.startRingtone(incoming: false));
       await controller.startOutgoing(
         organizationId: organizationId,
         calleeId: calleeId,
