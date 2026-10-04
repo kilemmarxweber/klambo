@@ -50,7 +50,7 @@ class _TypingDotsState extends State<TypingDots>
                 ? (phase * 2)
                 : (1 - (phase - 0.5) * 2);
             final opacity = 0.35 + bounce * 0.65;
-            final dy = -bounce * 3.5;
+            final dy = -bounce * 6;
             return Padding(
               padding: EdgeInsets.only(
                 left: i == 0 ? 0 : widget.gap,
@@ -112,7 +112,7 @@ class TypingBubble extends StatelessWidget {
             ),
           ],
         ),
-        child: const TypingDots(),
+        child: const TypingDots(color: Color(0xFF8E969E)),
       ),
     );
   }

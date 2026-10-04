@@ -33,6 +33,7 @@ import "package:klambo_messagerie/widgets/connection_sync_bar.dart";
 import "package:klambo_messagerie/widgets/eteyelo_messaging_app_bar.dart";
 import "package:klambo_messagerie/widgets/linkified_text.dart";
 import "package:klambo_messagerie/widgets/message_action_menu.dart";
+import "package:klambo_messagerie/widgets/typing_dots.dart";
 import "package:klambo_messagerie/widgets/user_avatar.dart";
 import "package:uuid/uuid.dart";
 
@@ -167,6 +168,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   StateController<String?>? _activeConvCtrl;
   bool _typingPeer = false;
   Timer? _typingClear;
+  DateTime? _typingSentAt;
   Timer? _presencePoll;
   Timer? _messagePoll;
   Timer? _threadRefresh;
@@ -309,6 +311,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void initState() {
     super.initState();
     _scroll.addListener(_onScrollPosition);
+    _input.addListener(_onInputChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _activeConvCtrl = ref.read(activeConversationIdProvider.notifier);
       _activeConvCtrl!.state = widget.conversationId;
@@ -371,9 +374,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (uid == null || uid == myId) return;
       setState(() => _typingPeer = true);
       _typingClear?.cancel();
-      _typingClear = Timer(const Duration(seconds: 3), () {
-        if (mounted) setState(() => _typingPeer = false);
-      });
+      _typingClear = Timer(const Duration(seconds: 3), _clearPeerTyping);
       return;
     }
 
@@ -405,6 +406,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         type == "message.updated" ||
         type == "message.deleted") {
       if (convId != null && convId != widget.conversationId) return;
+      if (type == "message.created") {
+        final senderId = event["senderId"]?.toString() ??
+            (payload is Map ? payload["senderId"]?.toString() : null);
+        final me = ref.read(sessionProvider).me?["user"];
+        final myId = me is Map ? me["id"]?.toString() : null;
+        if (senderId != null && senderId != myId) _clearPeerTyping();
+      }
       _threadRefresh?.cancel();
       _threadRefresh = Timer(const Duration(milliseconds: 400), () {
         if (mounted) unawaited(_load(silent: true));
@@ -415,6 +423,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   void dispose() {
     _eventsSub?.close();
+    _input.removeListener(_onInputChanged);
     _typingClear?.cancel();
     _threadRefresh?.cancel();
     _presencePoll?.cancel();
@@ -430,6 +439,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   void _onPresenceChanged() {
     if (mounted) setState(() {});
+  }
+
+  void _clearPeerTyping() {
+    _typingClear?.cancel();
+    if (!mounted || !_typingPeer) return;
+    setState(() => _typingPeer = false);
+  }
+
+  /// Signale à l'autre que l'on écrit, sans renvoyer à chaque frappe.
+  void _onInputChanged() {
+    if (_input.text.trim().isEmpty) return;
+    final now = DateTime.now();
+    if (_typingSentAt != null &&
+        now.difference(_typingSentAt!) < const Duration(seconds: 2)) {
+      return;
+    }
+    _typingSentAt = now;
+    ref.read(callHubProvider)?.socket.sendTyping(
+          organizationId: widget.organizationId,
+          conversationId: widget.conversationId,
+        );
   }
 
   Future<void> _bindPresence() async {
@@ -1570,7 +1600,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               fit: StackFit.expand,
               children: [
                 const ChatWallpaper(),
-                _messages.isEmpty
+                Column(
+                  children: [
+                    Expanded(
+                      child: _messages.isEmpty
                 ? Center(
                     child: _loading
                         ? const SizedBox.shrink()
@@ -1780,6 +1813,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       );
                     },
                   ),
+                    ),
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 160),
+                      curve: Curves.easeOut,
+                      alignment: Alignment.bottomLeft,
+                      child: _typingPeer
+                          ? const TypingBubble()
+                          : const SizedBox(
+                              width: double.infinity,
+                              height: 0,
+                            ),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
