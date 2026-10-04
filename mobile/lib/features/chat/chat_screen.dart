@@ -1407,7 +1407,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
       }
       if (mounted) setState(() => _replyTo = null);
-      // Pas de bip à l'envoi : le son reste réservé aux messages reçus.
       await _load(silent: true);
     } catch (e) {
       setState(() => _sendError = l10n.sendFailed);
