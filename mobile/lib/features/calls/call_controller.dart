@@ -167,6 +167,9 @@ class CallController extends ChangeNotifier {
       }
     };
 
+    // ICE connection state drives media-up / restart / fail (CallLink).
+    // PeerConnection state is a separate aggregate — do not feed it through
+    // parseIceSignal / _onLinkSignal (duplicate transitions + wrong restarts).
     _pc!.onIceConnectionState = (state) {
       if (_disposed || _ending) return;
       _onLinkSignal(parseIceSignal(state.toString()));
@@ -174,12 +177,7 @@ class CallController extends ChangeNotifier {
 
     _pc!.onConnectionState = (state) {
       if (_disposed || _ending) return;
-      final name = state.toString();
-      if (name.contains("Connected") ||
-          name.contains("Disconnected") ||
-          name.contains("Failed")) {
-        _onLinkSignal(parseIceSignal(name));
-      }
+      debugPrint("[call] pc connectionState=$state");
     };
 
     final mediaConstraints = <String, dynamic>{
@@ -407,6 +405,9 @@ class CallController extends ChangeNotifier {
       "sdp": answerSdp,
       "iceRestart": true,
     });
+    final dtls = payload["dtls"] is Map
+        ? Map<String, dynamic>.from(payload["dtls"] as Map)
+        : null;
     _socket.sendCallSignal(
       type: "call.answer",
       organizationId: call.organizationId,
@@ -415,6 +416,20 @@ class CallController extends ChangeNotifier {
       fromUserId: localUserId,
       payload: payload,
     );
+    // Persist like acceptIncoming so a lost WS answer still reaches the peer.
+    await _calls.callAction(
+      organizationId: call.organizationId,
+      callId: call.callId,
+      action: "answer",
+      sdp: answerSdp,
+      dtls: dtls,
+    );
+    if (!_socket.isConnected) {
+      await _postSignal("answer", {
+        "sdp": answerSdp,
+        "iceRestart": true,
+      });
+    }
   }
 
   void _cancelLinkTimers() {
