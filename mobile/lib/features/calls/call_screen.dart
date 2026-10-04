@@ -5,6 +5,7 @@ import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:flutter_webrtc/flutter_webrtc.dart";
 import "package:klambo_messagerie/core/l10n.dart";
 import "package:klambo_messagerie/features/calls/call_controller.dart";
+import "package:klambo_messagerie/features/calls/call_hub.dart";
 
 class CallScreen extends ConsumerStatefulWidget {
   const CallScreen({super.key, required this.controller});
@@ -65,7 +66,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     super.dispose();
   }
 
-  String _statusLabel(L10n l10n) {
+  String _statusLabel(L10n l10n, {required bool peerReachable}) {
     final hint = _c.error?.trim();
     if (hint != null &&
         hint.isNotEmpty &&
@@ -79,7 +80,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     }
     switch (_c.phase) {
       case CallPhase.ringingOut:
-        return l10n.callRingingOut;
+        return peerReachable ? l10n.callRingingOut : l10n.callPeerAway;
       case CallPhase.ringingIn:
         return l10n.callRingingIn;
       case CallPhase.connecting:
@@ -98,6 +99,10 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   @override
   Widget build(BuildContext context) {
     final l10n = ref.watch(l10nProvider);
+    final peerId = _c.active?.peerUserId;
+    final peerOnline = peerId != null &&
+        (ref.watch(presenceProvider)?.isOnline(peerId) ?? false);
+    final peerReachable = _c.peerIsRinging || peerOnline;
     if (_c.isDisposed) {
       return const Scaffold(
         backgroundColor: Color(0xFF0B1F17),
@@ -154,7 +159,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        _statusLabel(l10n),
+                        _statusLabel(l10n, peerReachable: peerReachable),
                         style: TextStyle(
                           color: Colors.white.withValues(alpha: 0.7),
                         ),

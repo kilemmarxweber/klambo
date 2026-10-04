@@ -404,7 +404,8 @@ class L10n {
       );
 
   String get callRingingOut =>
-      _t("Appel en cours…", "Calling…", "A chamar…");
+      _t("Appel en cours", "Call in progress", "Chamada em curso");
+  String get callPeerAway => _t("Appel", "Call", "Chamada");
   String get callRingingIn =>
       _t("Appel entrant", "Incoming call", "Chamada recebida");
   String get callConnecting =>

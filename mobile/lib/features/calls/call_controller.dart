@@ -87,6 +87,8 @@ class CallController extends ChangeNotifier {
   int _prevLost = 0;
   int _prevReceived = 0;
 
+  bool get peerIsRinging => _offerAcked;
+
   bool get isBusy =>
       phase != CallPhase.idle && phase != CallPhase.ended;
 
@@ -1252,6 +1254,7 @@ class CallController extends ChangeNotifier {
           _offerResendTimer?.cancel();
           _offerResendTimer = null;
           debugPrint("[call] offer acked");
+          _safeNotify();
         }
         break;
       case "call.busy":
