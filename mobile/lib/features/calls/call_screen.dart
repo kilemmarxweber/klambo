@@ -5,7 +5,6 @@ import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:flutter_webrtc/flutter_webrtc.dart";
 import "package:klambo_messagerie/core/l10n.dart";
 import "package:klambo_messagerie/features/calls/call_controller.dart";
-import "package:klambo_messagerie/features/calls/call_hub.dart";
 
 class CallScreen extends ConsumerStatefulWidget {
   const CallScreen({super.key, required this.controller});
@@ -99,10 +98,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   @override
   Widget build(BuildContext context) {
     final l10n = ref.watch(l10nProvider);
-    final peerId = _c.active?.peerUserId;
-    final peerOnline = peerId != null &&
-        (ref.watch(presenceProvider)?.isOnline(peerId) ?? false);
-    final peerReachable = _c.peerIsRinging || peerOnline;
+    final peerReachable = _c.peerIsRinging;
     if (_c.isDisposed) {
       return const Scaffold(
         backgroundColor: Color(0xFF0B1F17),
