@@ -184,8 +184,9 @@ class NotificationService {
 
   /// Carré centré, coins transparents : Android dessine alors un rond.
   Future<Uint8List?> _circlePng(Uint8List bytes) async {
+    ui.Codec? codec;
     try {
-      final codec = await ui.instantiateImageCodec(bytes);
+      codec = await ui.instantiateImageCodec(bytes);
       final frame = await codec.getNextFrame();
       final image = frame.image;
       const size = 192.0;
@@ -218,6 +219,8 @@ class NotificationService {
       return data?.buffer.asUint8List();
     } catch (_) {
       return null;
+    } finally {
+      codec?.dispose();
     }
   }
 
