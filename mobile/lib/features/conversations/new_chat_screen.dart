@@ -119,7 +119,6 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
           body: caption,
           clientMessageId: const Uuid().v4(),
           durationMs: att.durationMs,
-          peerUserId: userId,
         );
       }
 
@@ -138,7 +137,6 @@ class _NewChatScreenState extends ConsumerState<NewChatScreen> {
               );
               return label.isEmpty ? l10n.conversationFallback : label;
             }(),
-            conversationType: "DIRECT",
             peerUserId: userId,
             peerImage: selected["image"]?.toString(),
             peerTelephone: extractPhoneNumber(selected),

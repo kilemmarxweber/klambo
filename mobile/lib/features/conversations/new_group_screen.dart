@@ -136,8 +136,6 @@ class _NewGroupScreenState extends ConsumerState<NewGroupScreen> {
           body: caption,
           clientMessageId: const Uuid().v4(),
           durationMs: att.durationMs,
-          peerUserId:
-              _selected.length == 1 ? _selected.keys.first : null,
         );
       }
 

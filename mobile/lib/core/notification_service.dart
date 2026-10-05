@@ -1,5 +1,3 @@
-import "dart:ui" as ui;
-
 import "package:app_badge_plus/app_badge_plus.dart";
 import "package:dio/dio.dart";
 import "package:flutter/foundation.dart";
@@ -175,52 +173,9 @@ class NotificationService {
       if (data == null || data.length < 32 || data.length > 2000000) {
         return null;
       }
-      final raw = Uint8List.fromList(data);
-      return await _circlePng(raw) ?? raw;
+      return Uint8List.fromList(data);
     } catch (_) {
       return null;
-    }
-  }
-
-  /// Carré centré, coins transparents : Android dessine alors un rond.
-  Future<Uint8List?> _circlePng(Uint8List bytes) async {
-    ui.Codec? codec;
-    try {
-      codec = await ui.instantiateImageCodec(bytes);
-      final frame = await codec.getNextFrame();
-      final image = frame.image;
-      const size = 192.0;
-      final side = image.width < image.height
-          ? image.width.toDouble()
-          : image.height.toDouble();
-      final src = Rect.fromLTWH(
-        (image.width - side) / 2,
-        (image.height - side) / 2,
-        side,
-        side,
-      );
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder);
-      canvas.clipPath(
-        Path()..addOval(const Rect.fromLTWH(0, 0, size, size)),
-      );
-      canvas.drawImageRect(
-        image,
-        src,
-        const Rect.fromLTWH(0, 0, size, size),
-        Paint()..isAntiAlias = true,
-      );
-      final picture = recorder.endRecording();
-      final out = await picture.toImage(size.toInt(), size.toInt());
-      final data = await out.toByteData(format: ui.ImageByteFormat.png);
-      image.dispose();
-      out.dispose();
-      picture.dispose();
-      return data?.buffer.asUint8List();
-    } catch (_) {
-      return null;
-    } finally {
-      codec?.dispose();
     }
   }
 
@@ -251,13 +206,6 @@ class NotificationService {
     final playSound = !silent && AlertPrefs.instance.soundsEnabled;
     final count = badgeCount ?? _unreadBadge;
     final avatar = await _avatarBytes(avatarUrl);
-    final icon = avatar == null ? null : ByteArrayAndroidBitmap(avatar);
-    final sender = Person(
-      name: title,
-      key: conversationId,
-      important: true,
-      icon: avatar == null ? null : ByteArrayAndroidIcon(avatar),
-    );
 
     await _plugin.show(
       id: id,
@@ -271,14 +219,11 @@ class NotificationService {
           importance: Importance.max,
           priority: Priority.max,
           category: AndroidNotificationCategory.message,
-          largeIcon: icon,
-          styleInformation: MessagingStyleInformation(
-            const Person(name: "Moi"),
-            conversationTitle: title,
-            groupConversation: false,
-            messages: [
-              Message(body, DateTime.now(), sender),
-            ],
+          largeIcon: avatar == null ? null : ByteArrayAndroidBitmap(avatar),
+          styleInformation: BigTextStyleInformation(
+            body,
+            contentTitle: title,
+            summaryText: "Klambocore",
           ),
           playSound: playSound,
           // null = son de notification par défaut du device
@@ -309,7 +254,6 @@ class NotificationService {
     required String callerName,
     required String kind,
     String? callId,
-    String? avatarUrl,
   }) async {
     if (!_ready || kIsWeb) return;
     if (!AlertPrefs.instance.callNotificationsEnabled) return;
@@ -319,7 +263,6 @@ class NotificationService {
         : "Appel audio entrant";
     const id = 900001;
     final playSound = AlertPrefs.instance.soundsEnabled;
-    final avatar = await _avatarBytes(avatarUrl);
 
     await _plugin.show(
       id: id,
@@ -333,7 +276,6 @@ class NotificationService {
           importance: Importance.max,
           priority: Priority.max,
           category: AndroidNotificationCategory.call,
-          largeIcon: avatar == null ? null : ByteArrayAndroidBitmap(avatar),
           fullScreenIntent: true,
           ongoing: true,
           autoCancel: false,

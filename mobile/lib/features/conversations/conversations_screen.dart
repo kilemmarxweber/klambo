@@ -10,6 +10,7 @@ import "package:klambo_messagerie/core/format_time.dart";
 import "package:klambo_messagerie/core/l10n.dart";
 import "package:klambo_messagerie/core/media_urls.dart";
 import "package:klambo_messagerie/core/notification_service.dart";
+import "package:klambo_messagerie/core/notify_trace.dart";
 import "package:klambo_messagerie/core/person_name.dart";
 import "package:klambo_messagerie/core/phone_number.dart";
 import "package:klambo_messagerie/core/publisher_info.dart";
@@ -25,6 +26,7 @@ import "package:klambo_messagerie/features/conversations/group_profile_screen.da
 import "package:klambo_messagerie/features/conversations/inbox_sync_policy.dart";
 import "package:klambo_messagerie/features/conversations/new_chat_screen.dart";
 import "package:klambo_messagerie/features/conversations/new_group_screen.dart";
+import "package:klambo_messagerie/features/parent/parent_hub_screen.dart";
 import "package:klambo_messagerie/features/presence/presence_controller.dart";
 import "package:klambo_messagerie/features/settings/settings_screen.dart";
 import "package:klambo_messagerie/widgets/chat_wallpaper.dart";
@@ -191,33 +193,6 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     }
   }
 
-  Future<void> _revealPatchedPreview(String? conversationId) async {
-    if (conversationId != null && conversationId.isNotEmpty) {
-      Map<String, dynamic>? last;
-      for (final item in _items) {
-        if (item["id"]?.toString() != conversationId) continue;
-        final raw = item["lastMessage"];
-        if (raw is Map) last = Map<String, dynamic>.from(raw);
-        break;
-      }
-      final body = last?["body"]?.toString() ?? "";
-      if (body.startsWith("k1.")) {
-        final clear = await ref
-            .read(messagingRepositoryProvider)
-            .openBody(body);
-        for (final item in _items) {
-          if (item["id"]?.toString() != conversationId) continue;
-          final raw = item["lastMessage"];
-          if (raw is Map) raw["body"] = clear;
-          break;
-        }
-      }
-    }
-    if (!mounted) return;
-    setState(() {});
-    _chimeNewConversations(_items);
-  }
-
   void _onInboxEvent(Map<String, dynamic> event) {
     final type = event["type"]?.toString() ?? "";
     if (type == "link.up") {
@@ -237,7 +212,8 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
       now: DateTime.now(),
     );
     if (effect == InboxEventEffect.patched) {
-      unawaited(_revealPatchedPreview(event["conversationId"]?.toString()));
+      setState(() {});
+      _chimeNewConversations(_items);
       return;
     }
     if (effect == InboxEventEffect.catchUp && _listPrimed) {
@@ -709,6 +685,13 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     );
   }
 
+  Future<void> _openParentHub() async {
+    await _pickOrgThenOpen(() {
+      final orgId = ref.read(sessionProvider).activeOrgId ?? "";
+      return ParentHubScreen(organizationId: orgId);
+    });
+  }
+
   void _showAbout() {
     final l10n = ref.read(l10nProvider);
     showAboutDialog(
@@ -883,6 +866,8 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
             ),
             onSelected: (value) {
               switch (value) {
+                case "parent":
+                  unawaited(_openParentHub());
                 case "settings":
                   _openSettings();
                 case "refresh":
@@ -895,6 +880,15 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
               }
             },
             itemBuilder: (_) => [
+              PopupMenuItem(
+                value: "parent",
+                child: ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  leading: const Icon(Icons.family_restroom_outlined),
+                  title: Text(l10n.parentHubTitle),
+                ),
+              ),
               PopupMenuItem(
                 value: "settings",
                 child: ListTile(
@@ -1097,8 +1091,11 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                                     CallTraceInfo.tryParse(previewRaw);
                                 final satisfactionPreview =
                                     SatisfactionTrace.tryParse(previewRaw);
+                                final notifyPreview =
+                                    NotifyTrace.tryParse(previewRaw);
                                 final preview =
                                     satisfactionPreview?.preview ??
+                                    notifyPreview?.preview ??
                                     callPreview?.label ??
                                     previewRaw;
                                 final needsSatisfaction =

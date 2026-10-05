@@ -4,60 +4,13 @@ import "package:dio/dio.dart";
 import "package:http_parser/http_parser.dart";
 import "package:klambo_messagerie/data/api_client.dart";
 import "package:klambo_messagerie/data/message_cache.dart";
-import "package:klambo_messagerie/features/crypto/message_vault.dart";
 
 class MessagingRepository {
-  MessagingRepository(this._api, {MessageCache? cache, MessageVault? vault})
-      : _cache = cache ?? MessageCache(),
-        _vault = vault ?? MessageVault(api: _api);
+  MessagingRepository(this._api, {MessageCache? cache})
+      : _cache = cache ?? MessageCache();
 
   final ApiClient _api;
   final MessageCache _cache;
-  final MessageVault _vault;
-
-  Future<void> ensureMessageKeys() => _vault.ensureRegistered();
-
-  Future<String> openBody(String body) => _vault.open(body);
-
-  Future<String> _seal(String body, String? peerUserId) {
-    if (peerUserId == null || peerUserId.isEmpty || body.trim().isEmpty) {
-      return Future.value(body);
-    }
-    return _vault.seal(body, peerUserId: peerUserId);
-  }
-
-  Future<void> _revealBody(Map<String, dynamic> item) async {
-    final raw = item["body"];
-    if (raw is! String || raw.isEmpty) return;
-    item["body"] = await _vault.open(raw);
-  }
-
-  Future<List<Map<String, dynamic>>> _revealMessages(List items) async {
-    final out = <Map<String, dynamic>>[];
-    for (final raw in items) {
-      if (raw is! Map) continue;
-      final item = Map<String, dynamic>.from(raw);
-      await _revealBody(item);
-      final reply = item["replyTo"];
-      if (reply is Map) {
-        final copy = Map<String, dynamic>.from(reply);
-        await _revealBody(copy);
-        item["replyTo"] = copy;
-      }
-      out.add(item);
-    }
-    return out;
-  }
-
-  Future<void> _revealConversations(List<Map<String, dynamic>> items) async {
-    for (final item in items) {
-      final last = item["lastMessage"];
-      if (last is! Map) continue;
-      final copy = Map<String, dynamic>.from(last);
-      await _revealBody(copy);
-      item["lastMessage"] = copy;
-    }
-  }
 
   /// Résultat éventuellement servi depuis le cache local.
   Future<Map<String, dynamic>> listConversations(
@@ -81,19 +34,13 @@ class MessagingRepository {
           .whereType<Map>()
           .map((e) => Map<String, dynamic>.from(e))
           .toList();
-      await _revealConversations(mapped);
       // Un delta ne remplace pas le cache de toute la liste.
       if (!delta) await _cache.saveConversations(organizationId, mapped);
-      return {...data, "items": mapped, "fromCache": false};
+      return {...data, "fromCache": false};
     } catch (e) {
       final cached = await _cache.getConversations(organizationId);
       if (cached != null) {
-        final mapped = cached
-            .whereType<Map>()
-            .map((e) => Map<String, dynamic>.from(e))
-            .toList();
-        await _revealConversations(mapped);
-        return {"items": mapped, "fromCache": true};
+        return {"items": cached, "fromCache": true};
       }
       rethrow;
     }
@@ -110,14 +57,12 @@ class MessagingRepository {
         query: {if (cursor != null) "cursor": cursor},
       );
       final items = (data["items"] as List?) ?? [];
-      final revealed = await _revealMessages(items);
-      await _cache.saveMessages(organizationId, conversationId, revealed);
-      return {...data, "items": revealed, "fromCache": false};
+      await _cache.saveMessages(organizationId, conversationId, items);
+      return {...data, "fromCache": false};
     } catch (e) {
       final cached = await _cache.getMessages(organizationId, conversationId);
       if (cached != null) {
-        final revealed = await _revealMessages(cached);
-        return {"items": revealed, "fromCache": true};
+        return {"items": cached, "fromCache": true};
       }
       rethrow;
     }
@@ -129,13 +74,11 @@ class MessagingRepository {
     required String body,
     String? replyToId,
     String? clientMessageId,
-    String? peerUserId,
-  }) async {
-    final sealed = await _seal(body, peerUserId);
+  }) {
     return _api.postJson(
       "/organizations/$organizationId/conversations/$conversationId/messages",
       data: {
-        "body": sealed,
+        "body": body,
         if (replyToId != null) "replyToId": replyToId,
         if (clientMessageId != null) "clientMessageId": clientMessageId,
       },
@@ -147,12 +90,10 @@ class MessagingRepository {
     String conversationId,
     String messageId, {
     required String body,
-    String? peerUserId,
-  }) async {
-    final sealed = await _seal(body, peerUserId);
+  }) {
     return _api.patchJson(
       "/organizations/$organizationId/conversations/$conversationId/messages/$messageId",
-      data: {"body": sealed},
+      data: {"body": body},
     );
   }
 
@@ -198,12 +139,10 @@ class MessagingRepository {
     String body = "",
     String? clientMessageId,
     int? durationMs,
-    String? peerUserId,
   }) async {
     try {
-      final sealed = await _seal(body, peerUserId);
       final form = FormData.fromMap({
-        if (sealed.trim().isNotEmpty) "body": sealed.trim(),
+        if (body.trim().isNotEmpty) "body": body.trim(),
         if (clientMessageId != null) "clientMessageId": clientMessageId,
         if (durationMs != null && durationMs > 0)
           "durationMs": durationMs.toString(),
@@ -240,14 +179,12 @@ class MessagingRepository {
     String? subject,
     bool asGroup = false,
     String? clientMessageId,
-  }) async {
-    final peer = recipientIds.length == 1 ? recipientIds.first : null;
-    final sealed = await _seal(body, peer);
+  }) {
     return _api.postJson(
       "/organizations/$organizationId/conversations",
       data: {
         "recipientIds": recipientIds,
-        "body": sealed,
+        "body": body,
         if (subject != null) "subject": subject,
         "asGroup": asGroup,
         if (clientMessageId != null) "clientMessageId": clientMessageId,

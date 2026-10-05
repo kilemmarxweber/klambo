@@ -8,9 +8,12 @@ import "package:flutter/services.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:klambo_messagerie/core/alert_prefs.dart";
 import "package:klambo_messagerie/core/background_alerts.dart";
+import "package:klambo_messagerie/core/call_trace.dart";
 import "package:klambo_messagerie/core/lock_screen.dart";
 import "package:klambo_messagerie/core/media_urls.dart";
 import "package:klambo_messagerie/core/notification_service.dart";
+import "package:klambo_messagerie/core/notify_trace.dart";
+import "package:klambo_messagerie/core/satisfaction_trace.dart";
 import "package:klambo_messagerie/core/sound_service.dart";
 import "package:klambo_messagerie/data/calls_repository.dart";
 import "package:klambo_messagerie/data/messaging_repository.dart";
@@ -100,7 +103,6 @@ class CallHub {
       identity: identity,
     );
     unawaited(identity.ensureRegistered());
-    unawaited(messaging.ensureMessageKeys());
     _bindCallKit();
     unawaited(_registerPushToken());
     unawaited(
@@ -253,7 +255,6 @@ class CallHub {
     )) {
       await controller.acceptIncoming();
     }
-    if (controller.isBusy) showCallScreen();
   }
 
   void _watchNetwork() {
@@ -290,21 +291,8 @@ class CallHub {
     }
   }
 
-  Future<void>? _incomingRingTask;
-
-  /// Coupe la sonnerie du service, puis une seule sonnerie Flutter.
-  Future<void> _playIncomingRing() {
-    final next = (_incomingRingTask ?? Future<void>.value()).then((_) async {
-      await BackgroundAlerts.stopNativeRing();
-      await SoundService.instance.startRingtone(incoming: true);
-    });
-    _incomingRingTask = next;
-    return next;
-  }
-
   Future<void> _alertIncomingCall() async {
-    unawaited(setLockScreenVisible(true));
-    unawaited(_playIncomingRing());
+    unawaited(SoundService.instance.startRingtone(incoming: true));
     final peer = controller.active?.peerName?.trim();
     final name = (peer != null && peer.isNotEmpty) ? peer : "Klambo";
     unawaited(
@@ -312,7 +300,6 @@ class CallHub {
         callerName: name,
         kind: controller.active?.kind ?? "AUDIO",
         callId: controller.active?.callId,
-        avatarUrl: resolveImageUrl(controller.active?.peerImage),
       ),
     );
     if (!kIsWeb &&
@@ -384,7 +371,10 @@ class CallHub {
         p["body"]?.toString() ??
         p["text"]?.toString() ??
         "Nouveau message";
-    final body = rawBody.startsWith("k1.") ? "Message" : rawBody;
+    final body = NotifyTrace.tryParse(rawBody)?.preview ??
+        SatisfactionTrace.tryParse(rawBody)?.preview ??
+        CallTraceInfo.tryParse(rawBody)?.label ??
+        rawBody;
     final messageId = _firstId([
       p["id"],
       p["messageId"],
@@ -488,13 +478,9 @@ class CallHub {
   void _onCallPhaseChanged() {
     _scheduleCallFallback();
     final phase = controller.phase;
-    final overLock = phase == CallPhase.ringingIn ||
-        phase == CallPhase.ringingOut ||
-        phase == CallPhase.connecting ||
-        phase == CallPhase.active;
-    unawaited(setLockScreenVisible(overLock));
     final callLive =
         phase == CallPhase.connecting || phase == CallPhase.active;
+    unawaited(setLockScreenVisible(callLive));
     if (callLive) {
       final peer = controller.active?.peerName?.trim();
       final name = (peer != null && peer.isNotEmpty) ? peer : "Klambo";
@@ -514,11 +500,11 @@ class CallHub {
       }
     }
     if (phase == CallPhase.ringingIn || phase == CallPhase.ringingOut) {
-      if (phase == CallPhase.ringingIn) {
-        unawaited(_playIncomingRing());
-      } else {
-        unawaited(SoundService.instance.startRingtone(incoming: false));
-      }
+      unawaited(
+        SoundService.instance.startRingtone(
+          incoming: phase == CallPhase.ringingIn,
+        ),
+      );
       if (phase == CallPhase.ringingIn) {
         final peer = controller.active?.peerName?.trim();
         final name = (peer != null && peer.isNotEmpty) ? peer : "Klambo";
@@ -527,7 +513,6 @@ class CallHub {
             callerName: name,
             kind: controller.active?.kind ?? "AUDIO",
             callId: controller.active?.callId,
-            avatarUrl: resolveImageUrl(controller.active?.peerImage),
           ),
         );
       }

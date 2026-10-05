@@ -5,6 +5,7 @@ import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:klambo_messagerie/core/app_version.dart";
 import "package:klambo_messagerie/core/alert_prefs.dart";
 import "package:klambo_messagerie/core/app_theme.dart";
+import "package:klambo_messagerie/core/data_saver_prefs.dart";
 import "package:klambo_messagerie/core/l10n.dart";
 import "package:klambo_messagerie/core/notification_service.dart";
 import "package:klambo_messagerie/core/publisher_info.dart";
@@ -26,6 +27,23 @@ class SettingsScreen extends ConsumerStatefulWidget {
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _prefs = AlertPrefs.instance;
+  final _dataSaver = DataSaverPrefs.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    _dataSaver.addListener(_onDataSaver);
+  }
+
+  @override
+  void dispose() {
+    _dataSaver.removeListener(_onDataSaver);
+    super.dispose();
+  }
+
+  void _onDataSaver() {
+    if (mounted) setState(() {});
+  }
 
   Future<void> _setTheme(ThemeMode mode) async {
     await ThemePrefs.instance.setMode(mode);
@@ -197,6 +215,37 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ),
                 ],
               ),
+            ),
+          ),
+          _SectionHeader(title: l10n.dataSaverSection),
+          Card(
+            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            elevation: 0,
+            color: scheme.surface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              children: [
+                SwitchListTile(
+                  secondary: const Icon(Icons.data_saver_on_outlined),
+                  title: Text(l10n.dataSaverTitle),
+                  subtitle: Text(l10n.dataSaverHint),
+                  value: _dataSaver.enabled,
+                  onChanged: (v) async {
+                    await _dataSaver.setEnabled(v);
+                  },
+                ),
+                SwitchListTile(
+                  secondary: const Icon(Icons.signal_cellular_alt_outlined),
+                  title: Text(l10n.dataSaverAuto),
+                  value: _dataSaver.autoOnMobile,
+                  onChanged: (v) async {
+                    await _dataSaver.setAutoOnMobile(v);
+                  },
+                ),
+              ],
             ),
           ),
           _SectionHeader(title: l10n.alertsSettings),

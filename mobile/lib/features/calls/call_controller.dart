@@ -2,6 +2,7 @@ import "dart:async";
 
 import "package:flutter/foundation.dart";
 import "package:flutter_webrtc/flutter_webrtc.dart";
+import "package:klambo_messagerie/core/data_saver_prefs.dart";
 import "package:klambo_messagerie/data/calls_repository.dart";
 import "package:klambo_messagerie/data/messaging_socket.dart";
 import "package:klambo_messagerie/features/calls/call_identity.dart";
@@ -20,7 +21,6 @@ class ActiveCall {
     required this.kind,
     required this.isCaller,
     this.peerName,
-    this.peerImage,
     this.conversationId,
   });
 
@@ -30,7 +30,6 @@ class ActiveCall {
   final String kind; // AUDIO | VIDEO
   final bool isCaller;
   final String? peerName;
-  final String? peerImage;
   final String? conversationId;
 }
 
@@ -286,11 +285,18 @@ class CallController extends ChangeNotifier {
         "autoGainControl": true,
       },
       "video": video
-          ? {
-              "facingMode": "user",
-              "width": 640,
-              "height": 480,
-            }
+          ? (DataSaverPrefs.instance.effectiveEnabled
+              ? {
+                  "facingMode": "user",
+                  "width": 320,
+                  "height": 240,
+                  "frameRate": 15,
+                }
+              : {
+                  "facingMode": "user",
+                  "width": 640,
+                  "height": 480,
+                })
           : false,
     };
     _localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
@@ -898,7 +904,6 @@ class CallController extends ChangeNotifier {
       kind: (p["kind"] ?? event["kind"] ?? "AUDIO").toString(),
       isCaller: false,
       peerName: p["callerName"]?.toString() ?? event["callerName"]?.toString(),
-      peerImage: p["callerImage"]?.toString() ?? event["callerImage"]?.toString(),
       conversationId: p["conversationId"]?.toString() ??
           event["conversationId"]?.toString(),
     );

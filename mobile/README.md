@@ -83,9 +83,10 @@ Bundle ID : `com.klambocore.klamboMessagerie`
 - Messages / appels : canaux Android `klambo_messages_v4` / `klambo_calls_v4`
 - Badge : bump local + sync API (ne s’efface plus si le poll est encore à 0)
 - Réglages : menu compte → Sons / Notifications messages / Appels
+- **Mode faible débit** (Paramètres → Données & réseau) : images à la demande, vidéo d’appel 320×240 — testable sur Chrome
 - Temps réel = WebSocket : l’autre téléphone doit avoir Klambo **ouvert ou en arrière-plan**
 
-> Push FCM (app **tuée** / écran verrouillé long) nécessite un projet Firebase + `google-services.json` et l’envoi côté Eteyelo. Sans ça, messages/appels n’arrivent pas si le process Android est mort.
+> Push FCM (app **tuée**) : côté Eteyelo `FCM_SERVER_KEY` + jetons via `POST /api/mobile/v1/calls/push-token`. Les messages déclenchent aussi un push data/notification si la clé est définie. Sans `google-services.json` Android, le jeton natif reste null (Chrome n’enregistre pas de FCM Android).
 
 ## Config
 

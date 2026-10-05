@@ -202,6 +202,80 @@ class L10n {
   String get later => _t("Plus tard", "Later", "Mais tarde");
   String get alertsSettings =>
       _t("Alertes", "Alerts", "Alertas");
+  String get dataSaverSection => _t(
+        "Données & réseau",
+        "Data & network",
+        "Dados e rede",
+      );
+  String get dataSaverTitle => _t(
+        "Mode faible débit",
+        "Low data mode",
+        "Modo poupança de dados",
+      );
+  String get dataSaverHint => _t(
+        "Médias à la demande, vidéo d’appel réduite (idéal 2G/3G)",
+        "Load media on demand, lighter video calls (best for 2G/3G)",
+        "Multimédia sob pedido, videochamadas mais leves (ideal 2G/3G)",
+      );
+  String get dataSaverAuto => _t(
+        "Activer auto sur données mobiles",
+        "Auto-enable on mobile data",
+        "Ativar automaticamente em dados móveis",
+      );
+  String get dataSaverTapToLoad => _t(
+        "Toucher pour charger l’image",
+        "Tap to load image",
+        "Toque para carregar a imagem",
+      );
+  String get dataSaverActiveBadge => _t(
+        "Faible débit",
+        "Low data",
+        "Poupança de dados",
+      );
+  String get parentHubTitle => _t(
+        "Espace parent",
+        "Parent hub",
+        "Área de pais",
+      );
+  String get parentChooseChild => _t(
+        "Choisir un enfant",
+        "Choose a child",
+        "Escolher um filho",
+      );
+  String get parentNoChildren => _t(
+        "Aucun élève associé à ce compte parent.",
+        "No students linked to this parent account.",
+        "Nenhum aluno associado a esta conta de pai.",
+      );
+  String get parentFees => _t("Frais", "Fees", "Propinas");
+  String get parentGrades =>
+      _t("Notes / période", "Grades / period", "Notas / período");
+  String get parentBulletin =>
+      _t("Bulletin PDF", "Report card PDF", "Boletim PDF");
+  String get parentDue => _t("Dû", "Due", "Devido");
+  String get parentPaid => _t("Payé", "Paid", "Pago");
+  String get parentReste => _t("Reste", "Balance", "Restante");
+  String get parentNoGrades => _t(
+        "Aucune note publiée pour le moment.",
+        "No grades published yet.",
+        "Ainda não há notas publicadas.",
+      );
+  String get parentBulletinReady => _t(
+        "Bulletin disponible pour téléchargement.",
+        "Report card ready to download.",
+        "Boletim disponível para descarregar.",
+      );
+  String get parentBulletinSoon => _t(
+        "PDF bientôt disponible — périodes listées ci-dessous.",
+        "PDF coming soon — periods listed below.",
+        "PDF em breve — períodos listados abaixo.",
+      );
+  String get parentPay => _t("Payer", "Pay", "Pagar");
+  String get parentPayComingSoon => _t(
+        "Le paiement Mobile Money s’ouvrira bientôt depuis la fiche de frais.",
+        "Mobile Money payment will open from the fee card soon.",
+        "O pagamento Mobile Money abrirá em breve a partir do cartão de propinas.",
+      );
   String get appearance =>
       _t("Apparence", "Appearance", "Aparência");
   String get settings =>
@@ -436,6 +510,22 @@ class L10n {
   String get callCamera => _t("Caméra", "Camera", "Câmara");
   String get callHangup => _t("Raccrocher", "Hang up", "Desligar");
   String get callMinimize => _t("Réduire", "Minimize", "Minimizar");
+
+  String get noticeAckRead => _t(
+        "Accusé de lecture",
+        "Mark as read",
+        "Confirmar leitura",
+      );
+  String get noticeAckDone => _t(
+        "Lecture confirmée",
+        "Read confirmed",
+        "Leitura confirmada",
+      );
+  String get noticeAckFailed => _t(
+        "Impossible d'enregistrer l'accusé",
+        "Could not save read receipt",
+        "Não foi possível confirmar a leitura",
+      );
 }
 
 class LocaleController extends ChangeNotifier {

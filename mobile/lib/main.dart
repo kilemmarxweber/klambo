@@ -7,6 +7,7 @@ import "package:klambo_messagerie/core/alert_prefs.dart";
 import "package:klambo_messagerie/core/app_theme.dart";
 import "package:klambo_messagerie/core/background_alerts.dart";
 import "package:klambo_messagerie/core/config.dart";
+import "package:klambo_messagerie/core/data_saver_prefs.dart";
 import "package:klambo_messagerie/core/l10n.dart";
 import "package:klambo_messagerie/core/notification_service.dart";
 import "package:klambo_messagerie/core/theme_prefs.dart";
@@ -31,6 +32,7 @@ Future<void> main() async {
       LocaleController.instance.loadPersisted(),
       AlertPrefs.instance.load(),
       ThemePrefs.instance.load(),
+      DataSaverPrefs.instance.load(),
       WallpaperPrefs.instance.load(),
     ]);
   } catch (e, st) {

@@ -10,23 +10,25 @@ import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:klambo_messagerie/core/app_page_route.dart";
 import "package:klambo_messagerie/core/app_theme.dart";
 import "package:klambo_messagerie/core/call_trace.dart";
+import "package:klambo_messagerie/core/data_saver_prefs.dart";
 import "package:klambo_messagerie/core/format_time.dart";
 import "package:klambo_messagerie/core/gallery_save.dart";
 import "package:klambo_messagerie/core/l10n.dart";
 import "package:klambo_messagerie/core/media_urls.dart";
+import "package:klambo_messagerie/core/notify_trace.dart";
 import "package:klambo_messagerie/core/person_name.dart";
 import "package:klambo_messagerie/core/phone_number.dart";
 import "package:klambo_messagerie/core/satisfaction_trace.dart";
 import "package:klambo_messagerie/core/sound_service.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
 import "package:klambo_messagerie/features/calls/call_hub.dart";
-import "package:klambo_messagerie/features/crypto/message_vault.dart";
 import "package:klambo_messagerie/features/conversations/inbox_sync_policy.dart";
 import "package:klambo_messagerie/features/chat/active_chat_provider.dart";
 import "package:klambo_messagerie/features/chat/split_chat.dart";
 import "package:klambo_messagerie/features/chat/contact_profile_screen.dart";
 import "package:klambo_messagerie/features/conversations/group_profile_screen.dart";
 import "package:klambo_messagerie/features/conversations/group_settings_screen.dart";
+import "package:klambo_messagerie/features/parent/parent_hub_screen.dart";
 import "package:klambo_messagerie/features/presence/presence_controller.dart";
 import "package:klambo_messagerie/widgets/chat_composer.dart";
 import "package:klambo_messagerie/widgets/chat_wallpaper.dart";
@@ -180,6 +182,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final Set<String> _selectedIds = {};
   final Set<String> _starredIds = {};
   final Set<String> _pinnedIds = {};
+  final Set<String> _noticeAckedIds = {};
+  final Set<String> _noticeAckingIds = {};
   late bool _noReply = widget.noReply;
   late bool _repliesLocked = widget.repliesLocked;
   late String? _myRole = widget.myRole;
@@ -189,12 +193,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _splitHandoff = false;
 
   bool get _isGroup => (_conversationType ?? "").toUpperCase() == "GROUP";
-
-  /// Seul un direct est chiffré. Les groupes et les fils d'école restent en clair.
-  String? get _messagePeerId {
-    if ((_conversationType ?? "").toUpperCase() != "DIRECT") return null;
-    return widget.peerUserId;
-  }
   bool get _isGroupAdmin => _myRole == "ADMIN";
   bool get _composerBlocked {
     if (_isNoReplyConversation) return true;
@@ -943,7 +941,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             widget.conversationId,
             id,
             body: newBody,
-            peerUserId: _messagePeerId,
           );
       await _load(silent: true);
     } catch (e) {
@@ -1003,6 +1000,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("Suppression impossible : $e")),
+      );
+    }
+  }
+
+  Future<void> _acknowledgeNotice(String messageId) async {
+    if (messageId.isEmpty ||
+        messageId.startsWith("local-") ||
+        _noticeAckedIds.contains(messageId) ||
+        _noticeAckingIds.contains(messageId)) {
+      return;
+    }
+    final l10n = ref.read(l10nProvider);
+    setState(() => _noticeAckingIds.add(messageId));
+    try {
+      await ref.read(parentRepositoryProvider).acknowledgeNotice(
+            organizationId: widget.organizationId,
+            messageId: messageId,
+          );
+      if (!mounted) return;
+      setState(() {
+        _noticeAckingIds.remove(messageId);
+        _noticeAckedIds.add(messageId);
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _noticeAckingIds.remove(messageId));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.noticeAckFailed)),
       );
     }
   }
@@ -1158,18 +1183,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
     if (targetId == null || targetId.isEmpty) return;
     try {
-      final me = ref.read(sessionProvider).me?["user"];
-      final myId = me is Map ? me["id"]?.toString() : null;
-      final target = items.cast<Map<String, dynamic>?>().firstWhere(
-            (item) => item?["id"]?.toString() == targetId,
-            orElse: () => null,
-          );
       await repo.sendMessage(
         widget.organizationId,
         targetId,
         body: body,
         clientMessageId: const Uuid().v4(),
-        peerUserId: target == null ? null : directPeerUserId(target, myId),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1198,7 +1216,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             body: emoji,
             replyToId: replyId,
             clientMessageId: const Uuid().v4(),
-            peerUserId: _messagePeerId,
           );
       await _load(silent: true);
     } catch (e) {
@@ -1417,7 +1434,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           body: text,
           replyToId: _replyTo?["id"]?.toString(),
           clientMessageId: const Uuid().v4(),
-          peerUserId: _messagePeerId,
         );
       } else {
         for (var i = 0; i < attachments.length; i++) {
@@ -1444,7 +1460,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             body: caption,
             clientMessageId: const Uuid().v4(),
             durationMs: att.durationMs,
-            peerUserId: _messagePeerId,
           );
         }
         if (text.isNotEmpty && !captionUsed) {
@@ -1455,7 +1470,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             body: text,
             replyToId: _replyTo?["id"]?.toString(),
             clientMessageId: const Uuid().v4(),
-            peerUserId: _messagePeerId,
           );
         }
       }
@@ -1717,6 +1731,38 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                     ],
                                   ),
                                 ),
+                              ),
+                            ),
+                          ),
+                        );
+                      }
+                      final notifyTrace =
+                          deleted ? null : NotifyTrace.tryParse(body);
+                      if (notifyTrace != null) {
+                        final showAck = !mine &&
+                            msgId.isNotEmpty &&
+                            !msgId.startsWith("local-") &&
+                            notifyTrace.suggestsOfficialAck;
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 6),
+                          child: Align(
+                            alignment: mine
+                                ? Alignment.centerRight
+                                : Alignment.centerLeft,
+                            child: GestureDetector(
+                              onLongPress: () =>
+                                  _onMessageLongPress(msg, mine),
+                              onTap: _selectionMode
+                                  ? () => _onMessageLongPress(msg, mine)
+                                  : null,
+                              child: NotifyMessageCard(
+                                trace: notifyTrace,
+                                showReadAck: showAck,
+                                acked: _noticeAckedIds.contains(msgId),
+                                acking: _noticeAckingIds.contains(msgId),
+                                ackLabel: l10n.noticeAckRead,
+                                ackedLabel: l10n.noticeAckDone,
+                                onAck: () => _acknowledgeNotice(msgId),
                               ),
                             ),
                           ),
@@ -2752,6 +2798,7 @@ class _AttachmentViewState extends State<_AttachmentView> {
   bool _playing = false;
   bool _loadingAudio = false;
   String? _audioError;
+  bool _loadRemoteImage = false;
 
   @override
   void initState() {
@@ -3023,6 +3070,48 @@ class _AttachmentViewState extends State<_AttachmentView> {
       }
 
       if (url != null) {
+        final saver = DataSaverPrefs.instance.effectiveEnabled;
+        if (saver && !_loadRemoteImage) {
+          final width = widget.maxWidth.clamp(160.0, 280.0);
+          return Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () => setState(() => _loadRemoteImage = true),
+              borderRadius: BorderRadius.circular(14),
+              child: Container(
+                width: width,
+                height: 180,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE8EEF5),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.data_saver_on_outlined,
+                      color: Colors.blueGrey.shade600,
+                    ),
+                    const SizedBox(height: 8),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Text(
+                        L10n.of(LocaleController.instance.lang)
+                            .dataSaverTapToLoad,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.blueGrey.shade700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }
         final provider = CachedNetworkImageProvider(url);
         return _imageFrame(
           provider: provider,
@@ -3031,6 +3120,7 @@ class _AttachmentViewState extends State<_AttachmentView> {
             width: widget.maxWidth.clamp(160.0, 280.0),
             height: 180,
             fit: BoxFit.cover,
+            memCacheWidth: saver ? 480 : null,
             fadeInDuration: Duration.zero,
             fadeOutDuration: Duration.zero,
             placeholder: (_, __) => Container(
