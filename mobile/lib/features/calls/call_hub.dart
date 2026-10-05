@@ -312,6 +312,7 @@ class CallHub {
         callerName: name,
         kind: controller.active?.kind ?? "AUDIO",
         callId: controller.active?.callId,
+        avatarUrl: resolveImageUrl(controller.active?.peerImage),
       ),
     );
     if (!kIsWeb &&
@@ -526,6 +527,7 @@ class CallHub {
             callerName: name,
             kind: controller.active?.kind ?? "AUDIO",
             callId: controller.active?.callId,
+            avatarUrl: resolveImageUrl(controller.active?.peerImage),
           ),
         );
       }

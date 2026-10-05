@@ -20,6 +20,7 @@ class ActiveCall {
     required this.kind,
     required this.isCaller,
     this.peerName,
+    this.peerImage,
     this.conversationId,
   });
 
@@ -29,6 +30,7 @@ class ActiveCall {
   final String kind; // AUDIO | VIDEO
   final bool isCaller;
   final String? peerName;
+  final String? peerImage;
   final String? conversationId;
 }
 
@@ -896,6 +898,7 @@ class CallController extends ChangeNotifier {
       kind: (p["kind"] ?? event["kind"] ?? "AUDIO").toString(),
       isCaller: false,
       peerName: p["callerName"]?.toString() ?? event["callerName"]?.toString(),
+      peerImage: p["callerImage"]?.toString() ?? event["callerImage"]?.toString(),
       conversationId: p["conversationId"]?.toString() ??
           event["conversationId"]?.toString(),
     );

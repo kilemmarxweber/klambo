@@ -12,6 +12,11 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.drawable.Icon
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -342,8 +347,11 @@ class AlertConnectionService : Service() {
         val title = payload?.optString("callerName").orEmpty().ifBlank { "Klambocore" }
         val kind = payload?.optString("kind").orEmpty()
         val body = if (kind.equals("VIDEO", true)) "Appel vidéo entrant" else "Appel audio entrant"
+        val image = payload?.optString("callerImage").orEmpty().ifBlank {
+            event.optString("callerImage")
+        }
         wakeScreen()
-        postIncomingCall(title, body, event.toString(), soundsOn())
+        postIncomingCall(title, body, event.toString(), soundsOn(), avatarBitmap(image))
         bringCallToFront(event.toString())
         if (soundsOn()) startRing()
         armRingTimeout()
@@ -517,7 +525,13 @@ class AlertConnectionService : Service() {
         }
     }
 
-    private fun postIncomingCall(title: String, body: String, raw: String, sound: Boolean) {
+    private fun postIncomingCall(
+        title: String,
+        body: String,
+        raw: String,
+        sound: Boolean,
+        avatar: Bitmap? = null,
+    ) {
         val open = PendingIntent.getActivity(
             this,
             13,
@@ -553,10 +567,13 @@ class AlertConnectionService : Service() {
             .setContentIntent(open)
             .setFullScreenIntent(open, true)
             .setOnlyAlertOnce(false)
+        if (avatar != null) builder.setLargeIcon(avatar)
         if (Build.VERSION.SDK_INT >= 31) {
-            val person = Person.Builder().setName(title).setImportant(true).build()
-            builder.setStyle(Notification.CallStyle.forIncomingCall(person, decline, answer))
-            builder.addPerson(person)
+            val person = Person.Builder().setName(title).setImportant(true)
+            if (avatar != null) person.setIcon(Icon.createWithBitmap(avatar))
+            val caller = person.build()
+            builder.setStyle(Notification.CallStyle.forIncomingCall(caller, decline, answer))
+            builder.addPerson(caller)
         } else {
             builder.addAction(0, "Refuser", decline)
             builder.addAction(0, "Décrocher", answer)
@@ -598,13 +615,26 @@ class AlertConnectionService : Service() {
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(title)
             .setContentText(body)
-            .setStyle(Notification.BigTextStyle().bigText(body))
             .setAutoCancel(true)
             .setContentIntent(launch)
             .setCategory(if (call) Notification.CATEGORY_CALL else Notification.CATEGORY_MESSAGE)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOnlyAlertOnce(false)
-        if (avatar != null) builder.setLargeIcon(avatar)
+        if (avatar != null && !call && Build.VERSION.SDK_INT >= 28) {
+            val sender = Person.Builder()
+                .setName(title)
+                .setIcon(Icon.createWithBitmap(avatar))
+                .setImportant(true)
+                .build()
+            builder.setStyle(
+                Notification.MessagingStyle(Person.Builder().setName("Moi").build())
+                    .addMessage(body, System.currentTimeMillis(), sender),
+            )
+            builder.setLargeIcon(avatar)
+        } else {
+            builder.setStyle(Notification.BigTextStyle().bigText(body))
+            if (avatar != null) builder.setLargeIcon(avatar)
+        }
         if (sound) {
             val uri = if (call) {
                 RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
@@ -666,11 +696,40 @@ class AlertConnectionService : Service() {
                 val bytes = res.body?.bytes() ?: return null
                 if (bytes.size < 32 || bytes.size > 2_000_000) return null
                 val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
-                Bitmap.createScaledBitmap(decoded, 192, 192, true)
+                val circled = circleBitmap(decoded)
+                if (circled != decoded && !decoded.isRecycled) decoded.recycle()
+                circled
             }
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun circleBitmap(source: Bitmap): Bitmap {
+        val size = 192
+        val side = min(source.width, source.height)
+        val cropped = Bitmap.createBitmap(
+            source,
+            (source.width - side) / 2,
+            (source.height - side) / 2,
+            side,
+            side,
+        )
+        val scaled = if (cropped.width == size) {
+            cropped
+        } else {
+            Bitmap.createScaledBitmap(cropped, size, size, true)
+        }
+        if (scaled != cropped) cropped.recycle()
+        val output = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(output)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val radius = size / 2f
+        canvas.drawCircle(radius, radius, radius, paint)
+        paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
+        canvas.drawBitmap(scaled, 0f, 0f, paint)
+        if (!scaled.isRecycled) scaled.recycle()
+        return output
     }
 
     private fun ensureChannels() {
