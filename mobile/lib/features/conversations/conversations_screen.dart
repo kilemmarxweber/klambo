@@ -89,7 +89,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
         AppPageRoute(builder: (_) => _chatFrom(current)),
       );
       _narrowChatPushing = false;
-      if (mounted) _load(silent: true, catchUp: _listPrimed);
+      if (mounted) _refreshInboxAfterLeavingChat();
     });
   }
 
@@ -652,13 +652,37 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
       repliesLocked: item["repliesLocked"] == true,
     );
     if (useSplitConversationLayout(context)) {
+      _markConversationReadLocally(id);
       ref.read(splitChatProvider.notifier).state = target;
       return;
     }
+    _markConversationReadLocally(id);
     await Navigator.of(context).push(
       AppPageRoute(builder: (_) => _chatFrom(target)),
     );
-    if (mounted) _load(silent: true, catchUp: _listPrimed);
+    if (mounted) {
+      unawaited(_load(silent: true, catchUp: true));
+    }
+  }
+
+  void _markConversationReadLocally(String conversationId) {
+    if (conversationId.isEmpty) return;
+    final index =
+        _items.indexWhere((item) => item["id"]?.toString() == conversationId);
+    if (index < 0) return;
+    final current = (_items[index]["unreadCount"] as num?)?.toInt() ?? 0;
+    if (current == 0) return;
+    setState(() {
+      _items[index] = {
+        ...Map<String, dynamic>.from(_items[index]),
+        "unreadCount": 0,
+      };
+    });
+  }
+
+  void _refreshInboxAfterLeavingChat() {
+    if (!mounted) return;
+    unawaited(_load(silent: true, catchUp: true));
   }
 
   List<Map<String, dynamic>> get _filteredItems {
@@ -817,6 +841,15 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     final filtered = _filteredItems;
     final split = useSplitConversationLayout(context);
     final openChat = ref.watch(splitChatProvider);
+    ref.listen<SplitChatTarget?>(splitChatProvider, (prev, next) {
+      if (prev != null && next == null) {
+        _refreshInboxAfterLeavingChat();
+      } else if (prev != null &&
+          next != null &&
+          prev.conversationId != next.conversationId) {
+        _refreshInboxAfterLeavingChat();
+      }
+    });
 
     final page = Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,

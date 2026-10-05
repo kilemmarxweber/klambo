@@ -20,6 +20,7 @@ import "package:klambo_messagerie/core/person_name.dart";
 import "package:klambo_messagerie/core/phone_number.dart";
 import "package:klambo_messagerie/core/satisfaction_trace.dart";
 import "package:klambo_messagerie/core/sound_service.dart";
+import "package:klambo_messagerie/data/message_draft_store.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
 import "package:klambo_messagerie/features/calls/call_hub.dart";
 import "package:klambo_messagerie/features/conversations/inbox_sync_policy.dart";
@@ -175,6 +176,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Timer? _presencePoll;
   Timer? _messagePoll;
   Timer? _threadRefresh;
+  Timer? _draftSave;
   bool _messagesPrimed = false;
   final Set<String> _knownMessageIds = {};
   Map<String, dynamic>? _replyTo;
@@ -320,6 +322,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _activeConvCtrl = ref.read(activeConversationIdProvider.notifier);
       _activeConvCtrl!.state = widget.conversationId;
+      unawaited(_restoreDraft());
       _load(silent: false);
       _bindPresence();
       _eventsSub = ref.listenManual(messagingEventsProvider, (_, next) {
@@ -431,19 +434,65 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _input.removeListener(_onInputChanged);
     _typingClear?.cancel();
     _threadRefresh?.cancel();
+    _draftSave?.cancel();
     _presencePoll?.cancel();
     _messagePoll?.cancel();
     _presence?.removeListener(_onPresenceChanged);
+    final draftText = _input.text;
+    final orgId = widget.organizationId;
+    final convId = widget.conversationId;
+    unawaited(
+      MessageDraftStore.save(
+        organizationId: orgId,
+        conversationId: convId,
+        text: draftText,
+      ),
+    );
     final activeConv = _activeConvCtrl;
-    final conversationId = widget.conversationId;
-    if (activeConv?.state == conversationId) {
+    if (activeConv?.state == convId) {
       Future<void>(() {
-        if (activeConv?.state == conversationId) activeConv?.state = null;
+        if (activeConv?.state == convId) activeConv?.state = null;
       });
     }
     _input.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  Future<void> _restoreDraft() async {
+    final draft = await MessageDraftStore.load(
+      organizationId: widget.organizationId,
+      conversationId: widget.conversationId,
+    );
+    if (!mounted || draft == null || draft.isEmpty) return;
+    if (_input.text.isNotEmpty) return;
+    _input.value = TextEditingValue(
+      text: draft,
+      selection: TextSelection.collapsed(offset: draft.length),
+    );
+  }
+
+  Future<void> _persistDraftNow() async {
+    await MessageDraftStore.save(
+      organizationId: widget.organizationId,
+      conversationId: widget.conversationId,
+      text: _input.text,
+    );
+  }
+
+  void _scheduleDraftSave() {
+    _draftSave?.cancel();
+    _draftSave = Timer(const Duration(milliseconds: 350), () {
+      unawaited(_persistDraftNow());
+    });
+  }
+
+  Future<void> _clearDraft() async {
+    _draftSave?.cancel();
+    await MessageDraftStore.clear(
+      organizationId: widget.organizationId,
+      conversationId: widget.conversationId,
+    );
   }
 
   void _onPresenceChanged() {
@@ -458,6 +507,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   /// Signale à l'autre que l'on écrit, sans renvoyer à chaque frappe.
   void _onInputChanged() {
+    _scheduleDraftSave();
     if (_input.text.trim().isEmpty) return;
     final now = DateTime.now();
     if (_typingSentAt != null &&
@@ -1474,6 +1524,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
       }
       if (mounted) setState(() => _replyTo = null);
+      unawaited(_clearDraft());
       await _load(silent: true);
     } catch (e) {
       setState(() => _sendError = l10n.sendFailed);

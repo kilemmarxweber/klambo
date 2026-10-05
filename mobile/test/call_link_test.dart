@@ -34,7 +34,7 @@ void main() {
     expect(link.mediaUp, isFalse);
   });
 
-  test("disconnected attend, failed relance une fois puis abandonne", () {
+  test("disconnected attend, failed relance puis abandonne", () {
     final link = CallLink();
     link.mediaUp = true;
     link.hadMedia = true;
@@ -42,6 +42,10 @@ void main() {
     expect(link.onIce(CallIceSignal.disconnected), CallLinkAction.none);
     expect(link.takeRestart(), CallLinkAction.restartNow);
     expect(link.takeRestart(), CallLinkAction.none);
+
+    link.restartInFlight = false;
+    expect(link.onIce(CallIceSignal.failed), CallLinkAction.restartNow);
+    expect(link.takeRestart(), CallLinkAction.restartNow);
 
     link.restartInFlight = false;
     expect(link.onIce(CallIceSignal.failed), CallLinkAction.endFailed);

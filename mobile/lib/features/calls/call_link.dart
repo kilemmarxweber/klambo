@@ -27,8 +27,8 @@ CallIceSignal parseIceSignal(String raw) {
 /// `disconnected` / `failed` avant le premier média sont normaux (collecte ICE).
 /// Les traiter comme une coupure relançait l'appel et le coupait vers 15 s.
 class CallLink {
-  static const maxRestarts = 1;
-  static const disconnectGrace = Duration(seconds: 5);
+  static const maxRestarts = 2;
+  static const disconnectGrace = Duration(seconds: 10);
   static const initialConnectBudget = Duration(seconds: 45);
 
   int restartAttempts = 0;
