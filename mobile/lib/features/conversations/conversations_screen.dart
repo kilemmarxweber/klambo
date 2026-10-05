@@ -191,6 +191,33 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     }
   }
 
+  Future<void> _revealPatchedPreview(String? conversationId) async {
+    if (conversationId != null && conversationId.isNotEmpty) {
+      Map<String, dynamic>? last;
+      for (final item in _items) {
+        if (item["id"]?.toString() != conversationId) continue;
+        final raw = item["lastMessage"];
+        if (raw is Map) last = Map<String, dynamic>.from(raw);
+        break;
+      }
+      final body = last?["body"]?.toString() ?? "";
+      if (body.startsWith("k1.")) {
+        final clear = await ref
+            .read(messagingRepositoryProvider)
+            .openBody(body);
+        for (final item in _items) {
+          if (item["id"]?.toString() != conversationId) continue;
+          final raw = item["lastMessage"];
+          if (raw is Map) raw["body"] = clear;
+          break;
+        }
+      }
+    }
+    if (!mounted) return;
+    setState(() {});
+    _chimeNewConversations(_items);
+  }
+
   void _onInboxEvent(Map<String, dynamic> event) {
     final type = event["type"]?.toString() ?? "";
     if (type == "link.up") {
@@ -210,8 +237,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
       now: DateTime.now(),
     );
     if (effect == InboxEventEffect.patched) {
-      setState(() {});
-      _chimeNewConversations(_items);
+      unawaited(_revealPatchedPreview(event["conversationId"]?.toString()));
       return;
     }
     if (effect == InboxEventEffect.catchUp && _listPrimed) {

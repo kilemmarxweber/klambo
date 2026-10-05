@@ -20,6 +20,7 @@ import "package:klambo_messagerie/core/satisfaction_trace.dart";
 import "package:klambo_messagerie/core/sound_service.dart";
 import "package:klambo_messagerie/features/auth/session_provider.dart";
 import "package:klambo_messagerie/features/calls/call_hub.dart";
+import "package:klambo_messagerie/features/crypto/message_vault.dart";
 import "package:klambo_messagerie/features/conversations/inbox_sync_policy.dart";
 import "package:klambo_messagerie/features/chat/active_chat_provider.dart";
 import "package:klambo_messagerie/features/chat/split_chat.dart";
@@ -188,6 +189,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _splitHandoff = false;
 
   bool get _isGroup => (_conversationType ?? "").toUpperCase() == "GROUP";
+
+  /// Seul un direct est chiffré. Les groupes et les fils d'école restent en clair.
+  String? get _messagePeerId {
+    if ((_conversationType ?? "").toUpperCase() != "DIRECT") return null;
+    return widget.peerUserId;
+  }
   bool get _isGroupAdmin => _myRole == "ADMIN";
   bool get _composerBlocked {
     if (_isNoReplyConversation) return true;
@@ -936,6 +943,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             widget.conversationId,
             id,
             body: newBody,
+            peerUserId: _messagePeerId,
           );
       await _load(silent: true);
     } catch (e) {
@@ -1150,11 +1158,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
     if (targetId == null || targetId.isEmpty) return;
     try {
+      final me = ref.read(sessionProvider).me?["user"];
+      final myId = me is Map ? me["id"]?.toString() : null;
+      final target = items.cast<Map<String, dynamic>?>().firstWhere(
+            (item) => item?["id"]?.toString() == targetId,
+            orElse: () => null,
+          );
       await repo.sendMessage(
         widget.organizationId,
         targetId,
         body: body,
         clientMessageId: const Uuid().v4(),
+        peerUserId: target == null ? null : directPeerUserId(target, myId),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1183,6 +1198,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             body: emoji,
             replyToId: replyId,
             clientMessageId: const Uuid().v4(),
+            peerUserId: _messagePeerId,
           );
       await _load(silent: true);
     } catch (e) {
@@ -1401,6 +1417,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           body: text,
           replyToId: _replyTo?["id"]?.toString(),
           clientMessageId: const Uuid().v4(),
+          peerUserId: _messagePeerId,
         );
       } else {
         for (var i = 0; i < attachments.length; i++) {
@@ -1427,6 +1444,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             body: caption,
             clientMessageId: const Uuid().v4(),
             durationMs: att.durationMs,
+            peerUserId: _messagePeerId,
           );
         }
         if (text.isNotEmpty && !captionUsed) {
@@ -1437,6 +1455,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             body: text,
             replyToId: _replyTo?["id"]?.toString(),
             clientMessageId: const Uuid().v4(),
+            peerUserId: _messagePeerId,
           );
         }
       }

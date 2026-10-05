@@ -47,9 +47,12 @@ InboxEventEffect applyInboxEvent({
   final at = now.toUtc().toIso8601String();
   final senderId = event["senderId"]?.toString();
   item["updatedAt"] = at;
+  final cipher = event["bodyCipher"]?.toString() ?? "";
   item["lastMessage"] = {
     "id": event["messageId"],
-    "body": event["bodyPreview"]?.toString() ?? "",
+    "body": cipher.startsWith("k1.")
+        ? cipher
+        : (event["bodyPreview"]?.toString() ?? ""),
     "senderId": senderId,
     "senderName": event["senderName"],
     "createdAt": at,

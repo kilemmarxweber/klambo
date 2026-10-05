@@ -1,5 +1,6 @@
 package com.klambocore.klambo
 
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -85,7 +86,16 @@ class AlertConnectionService : Service() {
             ACTION_ONGOING -> {
                 val name = intent.getStringExtra(EXTRA_NAME) ?: "Klambo"
                 val video = intent.getBooleanExtra(EXTRA_VIDEO, false)
-                startInCallForeground(callOngoingNotification(name), video)
+                try {
+                    startInCallForeground(callOngoingNotification(name), video)
+                } catch (error: Exception) {
+                    // Un type micro/caméra refusé ne doit pas tuer l'app au décroché.
+                    android.util.Log.w("klambo", "in-call foreground", error)
+                    try {
+                        startMessagingForeground(ongoing)
+                    } catch (_: Exception) {
+                    }
+                }
                 return START_STICKY
             }
             ACTION_IDLE -> {
@@ -248,13 +258,18 @@ class AlertConnectionService : Service() {
             return
         }
         // L'écran ouvert gère lui-même messages et appels.
-        // Hors premier plan : toujours notifier (même si le heartbeat Flutter
-        // est encore récent après un passage en arrière-plan).
-        if (AppVisibility.inForeground && flutterStillAlive()) return
+        // Écran verrouillé : toujours la page d'appel, même si Flutter est encore là.
+        if (AppVisibility.inForeground && flutterStillAlive() && !screenLocked()) return
         when {
             type == "message.created" -> showMessage(event, me)
             type == "call.offer" && event.optString("toUserId") == me -> showCall(event)
         }
+    }
+
+    private fun screenLocked(): Boolean {
+        val power = getSystemService(PowerManager::class.java)
+        val keyguard = getSystemService(KeyguardManager::class.java)
+        return !power.isInteractive || keyguard.isKeyguardLocked
     }
 
     /** L'interface Flutter notifie elle-même tant que son horloge est récente. */
@@ -329,6 +344,7 @@ class AlertConnectionService : Service() {
         val body = if (kind.equals("VIDEO", true)) "Appel vidéo entrant" else "Appel audio entrant"
         wakeScreen()
         postIncomingCall(title, body, event.toString(), soundsOn())
+        bringCallToFront(event.toString())
         if (soundsOn()) startRing()
         armRingTimeout()
     }
@@ -494,7 +510,20 @@ class AlertConnectionService : Service() {
             .build()
     }
 
+    private fun bringCallToFront(raw: String) {
+        try {
+            startActivity(incomingIntent(raw, accept = false))
+        } catch (_: Exception) {
+        }
+    }
+
     private fun postIncomingCall(title: String, body: String, raw: String, sound: Boolean) {
+        val open = PendingIntent.getActivity(
+            this,
+            13,
+            incomingIntent(raw, accept = false),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         val answer = PendingIntent.getActivity(
             this,
             11,
@@ -521,15 +550,8 @@ class AlertConnectionService : Service() {
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setAutoCancel(false)
-            .setContentIntent(
-                PendingIntent.getActivity(
-                    this,
-                    13,
-                    incomingIntent(raw, accept = false),
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-                ),
-            )
-            .setFullScreenIntent(answer, true)
+            .setContentIntent(open)
+            .setFullScreenIntent(open, true)
             .setOnlyAlertOnce(false)
         if (Build.VERSION.SDK_INT >= 31) {
             val person = Person.Builder().setName(title).setImportant(true).build()

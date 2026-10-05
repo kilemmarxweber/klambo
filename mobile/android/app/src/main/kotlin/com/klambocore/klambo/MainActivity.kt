@@ -1,11 +1,15 @@
 package com.klambocore.klambo
 
+import android.app.NotificationManager
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -16,6 +20,7 @@ class MainActivity : FlutterActivity() {
     private var pendingCall: String? = null
     private var autoAccept = false
     private var systemRing: MediaPlayer? = null
+    private var callWake: PowerManager.WakeLock? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -71,13 +76,24 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "takePendingCall" -> {
-                        val raw = pendingCall
-                        val accept = autoAccept
+                        var raw = pendingCall
+                        var accept = autoAccept
                         pendingCall = null
                         autoAccept = false
                         if (raw.isNullOrBlank()) {
+                            val stored = getSharedPreferences(
+                                "FlutterSharedPreferences",
+                                MODE_PRIVATE,
+                            )
+                            raw = stored.getString("flutter.klambo_pending_call", null)
+                            if (!raw.isNullOrBlank()) {
+                                stored.edit().remove("flutter.klambo_pending_call").apply()
+                            }
+                        }
+                        if (raw.isNullOrBlank()) {
                             result.success(null)
                         } else {
+                            setCallHoldsScreen(true)
                             result.success(
                                 mapOf(
                                     "event" to raw,
@@ -87,6 +103,7 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     "pushToken" -> result.success(null)
+                    "prepareIncomingCalls" -> result.success(prepareIncomingCalls())
                     else -> result.notImplemented()
                 }
             }
@@ -148,7 +165,10 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /** Écran allumé seulement pendant un appel qui passe. Sinon, verrouillage normal. */
+    /**
+     * Page d'appel par-dessus le verrouillage, pour décrocher sans déverrouiller.
+     * Coupé dès que l'appel est terminé.
+     */
     private fun setCallHoldsScreen(hold: Boolean) {
         if (Build.VERSION.SDK_INT >= 27) {
             setShowWhenLocked(hold)
@@ -168,18 +188,69 @@ class MainActivity : FlutterActivity() {
         }
         if (hold) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            wakeForIncomingCall()
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            releaseCallWake()
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun wakeForIncomingCall() {
+        val power = getSystemService(PowerManager::class.java)
+        val lock = callWake ?: power.newWakeLock(
+            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                PowerManager.ON_AFTER_RELEASE,
+            "klambo:call-screen",
+        ).also { callWake = it }
+        if (!lock.isHeld) lock.acquire(60_000L)
+    }
+
+    private fun releaseCallWake() {
+        val lock = callWake ?: return
+        if (lock.isHeld) lock.release()
+    }
+
+    /** Une fois : plein écran sur écran verrouillé, sinon exemption batterie. */
+    private fun prepareIncomingCalls(): Boolean {
+        if (Build.VERSION.SDK_INT >= 34) {
+            val manager = getSystemService(NotificationManager::class.java)
+            if (!manager.canUseFullScreenIntent()) {
+                startActivity(
+                    Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+                        data = Uri.parse("package:$packageName")
+                    },
+                )
+                return true
+            }
+        }
+        val power = getSystemService(PowerManager::class.java)
+        if (!power.isIgnoringBatteryOptimizations(packageName)) {
+            try {
+                startActivity(
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    },
+                )
+                return true
+            } catch (_: Exception) {
+            }
+        }
+        return false
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (intent?.hasExtra(AlertConnectionService.EXTRA_CALL) == true) {
+            setCallHoldsScreen(true)
+        }
         captureCall(intent)
     }
 
     override fun onDestroy() {
         stopSystemRing()
+        releaseCallWake()
         super.onDestroy()
     }
 
@@ -201,6 +272,7 @@ class MainActivity : FlutterActivity() {
 
     private fun captureCall(intent: Intent?) {
         val raw = intent?.getStringExtra(AlertConnectionService.EXTRA_CALL) ?: return
+        setCallHoldsScreen(true)
         pendingCall = raw
         autoAccept = intent.getBooleanExtra(AlertConnectionService.EXTRA_ACCEPT, false)
     }
