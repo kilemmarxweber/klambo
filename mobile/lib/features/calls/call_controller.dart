@@ -3,7 +3,6 @@ import "dart:async";
 import "package:flutter/foundation.dart";
 import "package:flutter_webrtc/flutter_webrtc.dart";
 import "package:klambo_messagerie/core/data_saver_prefs.dart";
-import "package:klambo_messagerie/core/sound_service.dart";
 import "package:klambo_messagerie/data/calls_repository.dart";
 import "package:klambo_messagerie/data/messaging_socket.dart";
 import "package:klambo_messagerie/features/calls/call_identity.dart";
@@ -82,14 +81,6 @@ class CallController extends ChangeNotifier {
   bool _answerApplied = false;
   /// Une seule réponse à la fois : WS + REST envoient souvent le même SDP.
   bool _applyingAnswer = false;
-  /// ICE / PC préparés pendant la sonnerie entrante (avant Accepter).
-  List<Map<String, dynamic>>? _iceCache;
-  DateTime? _iceCacheAt;
-  Future<void>? _prewarmFuture;
-  bool _remoteOfferApplied = false;
-  /// false chez le callee jusqu'à l'envoi de la réponse (évite ICE prématuré).
-  bool _iceTransmitEnabled = true;
-  bool _accepting = false;
   Timer? _offerResendTimer;
   DateTime? _historyFallbackAt;
   Timer? _ringTimeout;
@@ -108,9 +99,6 @@ class CallController extends ChangeNotifier {
   int _prevReceived = 0;
 
   bool get peerIsRinging => _offerAcked;
-
-  /// Décroche en cours : sonnerie encore active, préparation média/ICE.
-  bool get isAccepting => _accepting;
 
   bool get isBusy =>
       phase != CallPhase.idle && phase != CallPhase.ended;
@@ -188,45 +176,37 @@ class CallController extends ChangeNotifier {
     {"urls": "stun:stun.l.google.com:19302"},
     {"urls": "stun:stun1.l.google.com:19302"},
     {"urls": "stun:stun.cloudflare.com:3478"},
+    {"urls": "stun:stun.cloudflare.com:53"},
+    {"urls": "stun:stun.nextcloud.com:443"},
     {
       "urls": "turns:openrelay.metered.ca:443?transport=tcp",
       "username": "openrelayproject",
       "credential": "openrelayproject",
     },
     {
-      "urls": "turn:openrelay.metered.ca:443",
+      "urls": "turn:openrelay.metered.ca:443?transport=tcp",
+      "username": "openrelayproject",
+      "credential": "openrelayproject",
+    },
+    {
+      "urls": "turn:openrelay.metered.ca:80",
       "username": "openrelayproject",
       "credential": "openrelayproject",
     },
   ];
 
   Future<List<Map<String, dynamic>>> _loadIce() async {
-    final cached = _iceCache;
-    final at = _iceCacheAt;
-    if (cached != null &&
-        at != null &&
-        DateTime.now().difference(at) < const Duration(minutes: 5)) {
-      return cached;
-    }
     try {
       final conf = await _calls.iceServers();
       final servers = conf["iceServers"];
       if (servers is List && servers.isNotEmpty) {
         final parsed = _expandIceServers(servers);
-        if (parsed.isNotEmpty) {
-          _iceCache = parsed;
-          _iceCacheAt = DateTime.now();
-          return parsed;
-        }
+        if (parsed.isNotEmpty) return parsed;
       }
     } catch (e) {
       debugPrint("[call] ice-servers: $e");
     }
-    final fallback =
-        _fallbackIce.map((e) => Map<String, dynamic>.from(e)).toList();
-    _iceCache = fallback;
-    _iceCacheAt = DateTime.now();
-    return fallback;
+    return _fallbackIce.map((e) => Map<String, dynamic>.from(e)).toList();
   }
 
   /// Une URL par entrée : les ports 80 et 443 partent ensemble.
@@ -250,37 +230,14 @@ class CallController extends ChangeNotifier {
       }
     }
     out.sort((a, b) => _iceRank(a["urls"]).compareTo(_iceRank(b["urls"])));
-    return _trimIceServers(out);
-  }
-
-  /// Cap STUN/TURN : trop d'entrées retarde le relais.
-  List<Map<String, dynamic>> _trimIceServers(
-    List<Map<String, dynamic>> ranked,
-  ) {
-    final turn = <Map<String, dynamic>>[];
-    final stun = <Map<String, dynamic>>[];
-    for (final s in ranked) {
-      final url = s["urls"]?.toString() ?? "";
-      if (url.contains(":53") ||
-          url.contains(":80") ||
-          url.contains("nextcloud")) {
-        continue;
-      }
-      if (url.startsWith("turns:") || url.startsWith("turn:")) {
-        if (turn.length < 2) turn.add(s);
-      } else if (url.startsWith("stun:")) {
-        if (stun.length < 3) stun.add(s);
-      }
-    }
-    return [...turn, ...stun];
+    return out;
   }
 
   int _iceRank(dynamic urls) {
     final url = urls?.toString() ?? "";
-    // TLS/TCP 443 d'abord : Wi‑Fi public → relais rapide.
-    if (url.startsWith("turns:") && url.contains(":443")) return 0;
-    if (url.startsWith("turn:") && url.contains(":443")) return 1;
-    if (url.startsWith("stun:")) return 2;
+    if (url.startsWith("stun:")) return 0;
+    if (url.contains(":443")) return 1;
+    if (url.contains(":80")) return 2;
     return 3;
   }
 
@@ -288,17 +245,7 @@ class CallController extends ChangeNotifier {
     if (_disposed || _ending) return;
     await initRenderers();
     if (_disposed || _ending) return;
-    if (_pc == null) {
-      await _createPeerConnection();
-    }
-    if (_disposed || _ending || _pc == null) return;
-    if (_localStream == null) {
-      await _attachLocalMedia(video);
-    }
-  }
 
-  Future<void> _createPeerConnection() async {
-    if (_pc != null || _disposed || _ending) return;
     final iceServers = await _loadIce();
     if (_disposed || _ending) return;
     _pc = await createPeerConnection({
@@ -306,8 +253,7 @@ class CallController extends ChangeNotifier {
       "sdpSemantics": "unified-plan",
       "bundlePolicy": "max-bundle",
       "rtcpMuxPolicy": "require",
-      // Pré-collecte TURN pendant la sonnerie (callee) / avant l'offre.
-      "iceCandidatePoolSize": 4,
+      "iceCandidatePoolSize": 2,
     });
 
     _pc!.onIceCandidate = (candidate) {
@@ -345,10 +291,7 @@ class CallController extends ChangeNotifier {
       if (_disposed || _ending) return;
       debugPrint("[call] pc connectionState=$state");
     };
-  }
 
-  Future<void> _attachLocalMedia(bool video) async {
-    if (_localStream != null || _pc == null || _disposed || _ending) return;
     final mediaConstraints = <String, dynamic>{
       "audio": {
         "echoCancellation": true,
@@ -385,32 +328,6 @@ class CallController extends ChangeNotifier {
     await _boostAudioSend();
     await _applyAudioRoute();
     _safeNotify();
-  }
-
-  /// Pendant la sonnerie : ICE + PC + offre distante, sans couper le micro/sonnerie.
-  Future<void> _prewarmIncoming() async {
-    if (_disposed || _ending || phase != CallPhase.ringingIn) return;
-    try {
-      await initRenderers();
-      if (_disposed || phase != CallPhase.ringingIn) return;
-      await _createPeerConnection();
-      if (_disposed || phase != CallPhase.ringingIn || _pc == null) return;
-      if (_incomingSdp != null &&
-          _incomingSdp!["sdp"] != null &&
-          !_remoteOfferApplied) {
-        await _pc!.setRemoteDescription(
-          RTCSessionDescription(
-            _incomingSdp!["sdp"] as String,
-            _incomingSdp!["type"] as String? ?? "offer",
-          ),
-        );
-        _remoteOfferApplied = true;
-        await _flushPendingIce();
-      }
-      debugPrint("[call] prewarm incoming ok (offerApplied=$_remoteOfferApplied)");
-    } catch (e) {
-      debugPrint("[call] prewarm incoming: $e");
-    }
   }
 
   /// Opus un peu plus large : meilleure voix derrière un TURN / autre réseau.
@@ -837,28 +754,17 @@ class CallController extends ChangeNotifier {
   }) async {
     if (_disposed) return;
     error = null;
-    _iceTransmitEnabled = true;
-    _remoteOfferApplied = false;
-    _accepting = false;
-    // Prefetch ICE pendant l'enregistrement d'identité.
-    unawaited(_loadIce());
-    unawaited(SoundService.instance.warmUp());
+    phase = CallPhase.ringingOut;
+    _safeNotify();
 
     try {
       await _identity?.ensureRegistered();
       final video = kind == "VIDEO";
-      // Micro d'abord : sinon le bip démarre puis getUserMedia le coupe (1er appel).
       await _ensurePeer(video);
       if (_disposed || _ending || _pc == null) {
         await endLocal(reason: "media_unavailable");
         return;
       }
-
-      phase = CallPhase.ringingOut;
-      _safeNotify();
-      unawaited(
-        SoundService.instance.startRingtone(incoming: false, force: true),
-      );
 
       final offer = await _pc!.createOffer({
         "offerToReceiveAudio": true,
@@ -997,12 +903,7 @@ class CallController extends ChangeNotifier {
     if (callId.isEmpty) return;
     final sdp = _sdpMap(p["sdp"]);
     if (active?.callId == callId && phase == CallPhase.ringingIn) {
-      if (_incomingSdp == null && sdp != null) {
-        _incomingSdp = sdp;
-        // Offre arrivée après le PC : terminer le prewarm.
-        _prewarmFuture = _prewarmIncoming();
-        unawaited(_prewarmFuture!);
-      }
+      if (_incomingSdp == null && sdp != null) _incomingSdp = sdp;
       return;
     }
     final inCall = phase != CallPhase.idle && phase != CallPhase.ended;
@@ -1035,9 +936,6 @@ class CallController extends ChangeNotifier {
     _incomingSdp = sdp;
     _incomingDtls = p["dtls"];
     _answerApplied = false;
-    _remoteOfferApplied = false;
-    _iceTransmitEnabled = false;
-    _accepting = false;
     _socket.sendCallSignal(
       type: "call.ack",
       organizationId: active!.organizationId,
@@ -1049,9 +947,6 @@ class CallController extends ChangeNotifier {
     _safeNotify();
     debugPrint("[call] incoming $callId from $fromId");
     onIncomingRing?.call(active!);
-    // Prépare TURN/PC pendant la sonnerie → Accepter ne fait plus attendre le relais.
-    _prewarmFuture = _prewarmIncoming();
-    unawaited(_prewarmFuture!);
   }
 
   Map<String, dynamic>? _sdpFromSignal(dynamic raw) {
@@ -1309,106 +1204,76 @@ class CallController extends ChangeNotifier {
   }
 
   Future<void> acceptIncoming() async {
-    if (active == null || phase != CallPhase.ringingIn || _accepting) return;
-    _accepting = true;
+    if (active == null || phase != CallPhase.ringingIn) return;
     error = null;
-    // Reste en ringingIn : la sonnerie continue pendant le préchauffage déjà fait.
+    phase = CallPhase.connecting;
+    _armConnectBudget();
     _safeNotify();
 
-    try {
-      await SoundService.instance.stopRingtone();
-
-      final video = active!.kind == "VIDEO";
-      final warm = _prewarmFuture;
-      if (warm != null) {
-        try {
-          await warm.timeout(const Duration(seconds: 2));
-        } catch (_) {}
-      }
-
-      // Média + identité en parallèle (PC/ICE déjà prêts via prewarm).
-      final identity = _identity;
-      await Future.wait([
-        _ensurePeer(video),
-        if (identity != null)
-          identity.ensureRegistered().catchError((Object e) {
-            debugPrint("[call] identity register: $e");
-          }),
-      ]);
-
-      if (_incomingSdp == null) {
-        await pullRemoteSignal();
-      }
-      if (_pc == null || _disposed || _ending) return;
-      if (_incomingSdp == null || _incomingSdp!["sdp"] == null) {
-        error = "Offre d'appel introuvable";
-        await endLocal(reason: "missing_offer");
-        return;
-      }
-      if (!await _guard(active!.peerUserId, {
-        "sdp": _incomingSdp,
-        "dtls": _incomingDtls,
-      })) {
-        return;
-      }
-
-      if (!_remoteOfferApplied) {
-        await _pc!.setRemoteDescription(
-          RTCSessionDescription(
-            _incomingSdp!["sdp"] as String,
-            _incomingSdp!["type"] as String? ?? "offer",
-          ),
-        );
-        _remoteOfferApplied = true;
-        await _flushPendingIce();
-      }
-
-      final answer = await _pc!.createAnswer({
-        "offerToReceiveAudio": true,
-        "offerToReceiveVideo": video,
-      });
-      await _pc!.setLocalDescription(answer);
-
-      final answerSdp = await _describedSdp(answer);
-      final sealedAnswer = await _seal({"sdp": answerSdp});
-      final dtls = sealedAnswer["dtls"] is Map
-          ? Map<String, dynamic>.from(sealedAnswer["dtls"] as Map)
-          : null;
-      _socket.sendCallSignal(
-        type: "call.answer",
-        organizationId: active!.organizationId,
-        callId: active!.callId,
-        toUserId: active!.peerUserId,
-        fromUserId: localUserId,
-        payload: sealedAnswer,
-      );
-      // REST en arrière-plan : ne bloque pas le relais ICE.
-      unawaited(
-        _calls.callAction(
-          organizationId: active!.organizationId,
-          callId: active!.callId,
-          action: "answer",
-          sdp: answerSdp,
-          dtls: dtls,
-        ),
-      );
-      if (!_socket.isConnected) {
-        unawaited(_postSignal("answer", {"sdp": answerSdp}));
-      }
-
-      _iceTransmitEnabled = true;
-      _flushLocalIce();
-
-      phase = markActiveOnAnswer(mediaAlreadyUp: _link.mediaUp)
-          ? CallPhase.active
-          : CallPhase.connecting;
-      if (phase == CallPhase.connecting) _armConnectBudget();
-      _stopOfferResend();
-      _stopRingTimeout();
-    } finally {
-      _accepting = false;
-      _safeNotify();
+    final video = active!.kind == "VIDEO";
+    await _ensurePeer(video);
+    if (_incomingSdp == null) {
+      await pullRemoteSignal();
     }
+    if (_pc == null || _disposed || _ending) return;
+    if (_incomingSdp == null || _incomingSdp!["sdp"] == null) {
+      error = "Offre d'appel introuvable";
+      await endLocal(reason: "missing_offer");
+      return;
+    }
+    if (!await _guard(active!.peerUserId, {
+      "sdp": _incomingSdp,
+      "dtls": _incomingDtls,
+    })) {
+      return;
+    }
+    await _identity?.ensureRegistered();
+
+    await _pc!.setRemoteDescription(
+      RTCSessionDescription(
+        _incomingSdp!["sdp"] as String,
+        _incomingSdp!["type"] as String? ?? "offer",
+      ),
+    );
+    await _flushPendingIce();
+
+    final answer = await _pc!.createAnswer({
+      "offerToReceiveAudio": true,
+      "offerToReceiveVideo": video,
+    });
+    await _pc!.setLocalDescription(answer);
+
+    final answerSdp = await _describedSdp(answer);
+    final sealedAnswer = await _seal({"sdp": answerSdp});
+    final dtls = sealedAnswer["dtls"] is Map
+        ? Map<String, dynamic>.from(sealedAnswer["dtls"] as Map)
+        : null;
+    _socket.sendCallSignal(
+      type: "call.answer",
+      organizationId: active!.organizationId,
+      callId: active!.callId,
+      toUserId: active!.peerUserId,
+      fromUserId: localUserId,
+      payload: sealedAnswer,
+    );
+    await _calls.callAction(
+      organizationId: active!.organizationId,
+      callId: active!.callId,
+      action: "answer",
+      sdp: answerSdp,
+      dtls: dtls,
+    );
+    if (!_socket.isConnected) {
+      await _postSignal("answer", {"sdp": answerSdp});
+    }
+
+    phase = markActiveOnAnswer(mediaAlreadyUp: _link.mediaUp)
+        ? CallPhase.active
+        : CallPhase.connecting;
+    if (phase == CallPhase.connecting) _armConnectBudget();
+    _stopOfferResend();
+    _stopRingTimeout();
+    _safeNotify();
   }
 
   Future<void> rejectIncoming() async {
@@ -1609,13 +1474,9 @@ class CallController extends ChangeNotifier {
 
   void _sendLocalIce(Map<String, dynamic> payload) {
     final call = active;
-    if (call == null || !_iceTransmitEnabled) {
+    if (call == null) {
       _pendingLocalIce.add(payload);
-      if (!_iceTransmitEnabled) {
-        debugPrint("[call] ice local bufferisé (attente réponse)");
-      } else {
-        debugPrint("[call] ice local en attente (pas encore d'id)");
-      }
+      debugPrint("[call] ice local en attente (pas encore d'id)");
       return;
     }
     _socket.sendCallSignal(
@@ -1699,10 +1560,6 @@ class CallController extends ChangeNotifier {
     _applyingAnswer = false;
     _incomingSdp = null;
     _incomingDtls = null;
-    _prewarmFuture = null;
-    _remoteOfferApplied = false;
-    _iceTransmitEnabled = true;
-    _accepting = false;
     speakerOn = false;
     _restartRequestSent = false;
     _offerAcked = false;

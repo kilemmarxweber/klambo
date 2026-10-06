@@ -249,89 +249,9 @@ class L10n {
       );
   String get parentFees => _t("Frais", "Fees", "Propinas");
   String get parentGrades =>
-      _t("Notes", "Grades", "Notas");
+      _t("Notes / période", "Grades / period", "Notas / período");
   String get parentBulletin =>
-      _t("Bulletin", "Report card", "Boletim");
-  String get parentBotWelcome => _t(
-        "Bonjour 👋 Choisissez Frais, Notes ou Bulletin ci-dessous — ou tapez votre demande.",
-        "Hi 👋 Pick Fees, Grades or Report card below — or type your request.",
-        "Olá 👋 Escolha Propinas, Notas ou Boletim abaixo — ou escreva o pedido.",
-      );
-  String get parentBotAskClass => _t(
-        "Quelle classe ?",
-        "Which class?",
-        "Qual turma?",
-      );
-  String get parentBotAskName => _t(
-        "Quel élève ?",
-        "Which student?",
-        "Qual aluno?",
-      );
-  String get parentBotLoading => _t(
-        "Chargement…",
-        "Loading…",
-        "A carregar…",
-      );
-  String get parentBotUnknownClass => _t(
-        "Classe introuvable. Choisissez parmi les suggestions.",
-        "Class not found. Pick one of the suggestions.",
-        "Turma não encontrada. Escolha uma sugestão.",
-      );
-  String get parentBotUnknownName => _t(
-        "Élève introuvable. Choisissez parmi les suggestions.",
-        "Student not found. Pick one of the suggestions.",
-        "Aluno não encontrado. Escolha uma sugestão.",
-      );
-  String get parentBotHint => _t(
-        "Écrire une classe ou un nom…",
-        "Type a class or name…",
-        "Escrever turma ou nome…",
-      );
-  String get parentBotHintIdle => _t(
-        "Ex. Frais, Notes, Bulletin…",
-        "E.g. Fees, Grades, Report…",
-        "Ex. Propinas, Notas, Boletim…",
-      );
-  String get parentBotResultFor => _t(
-        "Voici le résultat pour",
-        "Here is the result for",
-        "Aqui está o resultado para",
-      );
-  String get parentBotAskTopic => _t(
-        "Que souhaitez-vous consulter ?",
-        "What would you like to check?",
-        "O que deseja consultar?",
-      );
-  String get parentBotAskFeeType => _t(
-        "Quel type de frais ?",
-        "Which fee type?",
-        "Qual tipo de propina?",
-      );
-  String get parentBotAskPeriod => _t(
-        "Quelle période ?",
-        "Which period?",
-        "Qual período?",
-      );
-  String get parentBotShowAll => _t(
-        "Tout afficher",
-        "Show all",
-        "Mostrar tudo",
-      );
-  String get parentBotPickedStudent => _t(
-        "Élève sélectionné",
-        "Selected student",
-        "Aluno selecionado",
-      );
-  String get parentBotNameMatches => _t(
-        "Plusieurs élèves correspondent. Lequel ?",
-        "Several students match. Which one?",
-        "Vários alunos correspondem. Qual?",
-      );
-  String get parentBotUnknownDetail => _t(
-        "Choix introuvable. Utilisez une suggestion.",
-        "Choice not found. Use a suggestion.",
-        "Escolha não encontrada. Use uma sugestão.",
-      );
+      _t("Bulletin PDF", "Report card PDF", "Boletim PDF");
   String get parentDue => _t("Dû", "Due", "Devido");
   String get parentPaid => _t("Payé", "Paid", "Pago");
   String get parentReste => _t("Reste", "Balance", "Restante");
@@ -356,6 +276,59 @@ class L10n {
         "Mobile Money payment will open from the fee card soon.",
         "O pagamento Mobile Money abrirá em breve a partir do cartão de propinas.",
       );
+  String get parentBotWelcome => _t(
+        "Bonjour ! Que souhaitez-vous consulter ?",
+        "Hello! What would you like to check?",
+        "Olá! O que deseja consultar?",
+      );
+  String get parentBotLoading =>
+      _t("Un instant…", "One moment…", "Um momento…");
+  String get parentBotShowAll =>
+      _t("Tout afficher", "Show all", "Mostrar tudo");
+  String get parentBotAskClass =>
+      _t("De quelle classe ?", "Which class?", "De que turma?");
+  String get parentBotUnknownClass => _t(
+        "Classe non reconnue. Choisissez parmi la liste.",
+        "Class not recognized. Pick from the list.",
+        "Turma não reconhecida. Escolha na lista.",
+      );
+  String get parentBotAskName =>
+      _t("Quel élève ?", "Which student?", "Que aluno?");
+  String get parentBotAskTopic => _t(
+        "Frais, notes ou bulletin ?",
+        "Fees, grades or report card?",
+        "Propinas, notas ou boletim?",
+      );
+  String get parentBotPickedStudent =>
+      _t("Élève", "Student", "Aluno");
+  String get parentBotUnknownName => _t(
+        "Nom non reconnu. Choisissez parmi la liste.",
+        "Name not recognized. Pick from the list.",
+        "Nome não reconhecido. Escolha na lista.",
+      );
+  String get parentBotNameMatches => _t(
+        "Plusieurs correspondances :",
+        "Several matches:",
+        "Várias correspondências:",
+      );
+  String get parentBotAskFeeType =>
+      _t("Quel type de frais ?", "Which fee type?", "Que tipo de propina?");
+  String get parentBotAskPeriod =>
+      _t("Quelle période ?", "Which period?", "Que período?");
+  String get parentBotUnknownDetail => _t(
+        "Choix non reconnu. Réessayez.",
+        "Choice not recognized. Try again.",
+        "Escolha não reconhecida. Tente de novo.",
+      );
+  String get parentBotResultFor =>
+      _t("Résultat pour", "Result for", "Resultado para");
+  String get parentBotHintIdle => _t(
+        "Frais, notes, bulletin…",
+        "Fees, grades, report card…",
+        "Propinas, notas, boletim…",
+      );
+  String get parentBotHint =>
+      _t("Écrire une réponse…", "Type a reply…", "Escrever uma resposta…");
   String get appearance =>
       _t("Apparence", "Appearance", "Aparência");
   String get settings =>

@@ -24,32 +24,23 @@ class SoundService {
   bool get _android =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
-  /// Débloque / précharge les lecteurs d'alertes (message + bip d'appel).
+  /// Débloque / précharge le lecteur qui servira aux alertes automatiques.
+  /// Le même player est réutilisé : un lecteur jetable ne débloque pas le suivant.
   Future<void> warmUp() async {
     if (_warmed) return;
     try {
-      final message = await _messagePlayer();
-      await message.setVolume(0.01);
-      await message.play(AssetSource("sounds/message.wav"), volume: 0.01);
-      await Future<void>.delayed(const Duration(milliseconds: 60));
-      await message.stop();
-      await message.setVolume(1.0);
-
-      // Précharge aussi le bip sortant : sinon le 1er appel reste muet.
-      final ring = await _ringPlayer(outgoing: true);
-      await ring.setVolume(0.01);
-      await ring.play(AssetSource("sounds/ringtone.wav"), volume: 0.01);
-      await Future<void>.delayed(const Duration(milliseconds: 60));
-      await ring.stop();
-      await ring.setVolume(1.0);
-
+      final p = await _messagePlayer();
+      await p.setVolume(0.01);
+      await p.play(AssetSource("sounds/message.wav"), volume: 0.01);
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      await p.stop();
+      await p.setVolume(1.0);
       _warmed = true;
       debugPrint("[sound] warmUp ok");
     } catch (e) {
       debugPrint("[sound] warmUp: $e");
       _warmed = false;
       await _resetNotifyPlayer();
-      await _resetRingPlayer();
     }
   }
 
@@ -107,21 +98,17 @@ class SoundService {
     return _notify!;
   }
 
-  Future<AudioPlayer> _ringPlayer({bool outgoing = false}) async {
+  Future<AudioPlayer> _ringPlayer() async {
     final existing = _ring;
     if (existing != null) return existing;
     _ring = await _createPlayer(
       releaseMode: ReleaseMode.loop,
-      android: AudioContextAndroid(
+      android: const AudioContextAndroid(
         isSpeakerphoneOn: true,
         stayAwake: true,
         contentType: AndroidContentType.sonification,
-        // Sortant : "media" passe dès le 1er appel (ringtone est souvent
-        // coupé après getUserMedia). Entrant asset : ringtone OK.
-        usageType: outgoing
-            ? AndroidUsageType.media
-            : AndroidUsageType.notificationRingtone,
-        audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+        usageType: AndroidUsageType.notificationRingtone,
+        audioFocus: AndroidAudioFocus.gain,
       ),
     );
     return _ring!;
@@ -176,16 +163,8 @@ class SoundService {
 
   /// [incoming] : B reçoit l'appel (sonnerie des réglages Android si dispo).
   /// Sinon A a lancé l'appel (bip continu). iOS/web / fallback : asset WAV.
-  /// [force] : relance même si déjà en cours (ex. après getUserMedia).
-  Future<void> startRingtone({
-    bool incoming = false,
-    bool force = false,
-  }) async {
+  Future<void> startRingtone({bool incoming = false}) async {
     if (!AlertPrefs.instance.soundsEnabled) return;
-    if (_ringing && !force) return;
-    if (force) {
-      await stopRingtone();
-    }
     if (_ringing) return;
     _ringing = true;
     _ringFallbackTimer?.cancel();
@@ -206,16 +185,9 @@ class SoundService {
       }
     }
 
-    // Cue immédiat : audible même si l'asset met 1 frame à démarrer.
-    if (!incoming) {
-      await _playSystemCue();
-    }
-
     var assetOk = false;
     try {
-      // Nouveau player à chaque force (contexte audio après micro).
-      if (force) await _resetRingPlayer();
-      final p = await _ringPlayer(outgoing: !incoming);
+      final p = await _ringPlayer();
       await p.stop();
       await p.setReleaseMode(ReleaseMode.loop);
       final volume = incoming ? 1.0 : 0.85;
@@ -255,20 +227,16 @@ class SoundService {
         debugPrint("[sound] stop android ringtone: $e");
       }
     }
-    // Dispose pour libérer le focus audio avant MODE_IN_COMMUNICATION.
     final ring = _ring;
     if (ring == null) return;
-    _ring = null;
     try {
       await ring.stop();
     } catch (e) {
       debugPrint("[sound] stop ringtone failed: $e");
     }
     try {
-      await ring.dispose();
-    } catch (e) {
-      debugPrint("[sound] dispose ringtone: $e");
-    }
+      await ring.setReleaseMode(ReleaseMode.release);
+    } catch (_) {}
   }
 
   Future<void> dispose() async {

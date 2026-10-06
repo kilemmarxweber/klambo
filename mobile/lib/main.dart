@@ -10,7 +10,6 @@ import "package:klambo_messagerie/core/config.dart";
 import "package:klambo_messagerie/core/data_saver_prefs.dart";
 import "package:klambo_messagerie/core/l10n.dart";
 import "package:klambo_messagerie/core/notification_service.dart";
-import "package:klambo_messagerie/core/sound_service.dart";
 import "package:klambo_messagerie/core/theme_prefs.dart";
 import "package:klambo_messagerie/core/wallpaper_prefs.dart";
 import "package:klambo_messagerie/features/auth/phone_login_screen.dart";
@@ -83,8 +82,6 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
     // pour recevoir messages + appels dès que l'app n'est plus gelée.
     if (state == AppLifecycleState.resumed) {
       unawaited(BackgroundAlerts.touch());
-      unawaited(BackgroundAlerts.ensureAlive());
-      unawaited(SoundService.instance.warmUp());
     }
     if ((state == AppLifecycleState.paused ||
             state == AppLifecycleState.hidden) &&
@@ -158,7 +155,6 @@ class _RootGateState extends ConsumerState<RootGate> {
       await NotificationService.instance.requestPermissions();
     }
     await BackgroundAlerts.start();
-    unawaited(SoundService.instance.warmUp());
   }
 
   @override
