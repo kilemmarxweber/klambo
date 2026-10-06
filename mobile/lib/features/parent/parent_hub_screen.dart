@@ -467,13 +467,13 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
   }
 
   Future<void> _askTopic() async {
-    final topics = _topicSuggestions;
     setState(() {
       _step = _BotStep.askTopic;
-      _suggestions = topics;
+      // Pas de chips : la _TopicList verticale suffit.
+      _suggestions = [];
       _studentByLabel.clear();
     });
-    _pushBot(_l10n.parentBotAskTopic, suggestions: topics);
+    _pushBot(_l10n.parentBotAskTopic);
   }
 
   Future<void> _continueAfterStudent() async {
@@ -850,8 +850,11 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
         final topic = _matchTopic(text);
         if (topic == null) {
           _pushUser(text);
-          _pushBot(_l10n.parentBotAskTopic, suggestions: _topicSuggestions);
-          setState(() => _suggestions = _topicSuggestions);
+          _pushBot(_l10n.parentBotAskTopic);
+          setState(() {
+            _step = _BotStep.askTopic;
+            _suggestions = [];
+          });
           return;
         }
         await _startTopic(topic);
@@ -995,19 +998,27 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
                           if (_suggestions.isNotEmpty &&
                               (_step == _BotStep.askClass ||
                                   _step == _BotStep.askName ||
-                                  _step == _BotStep.askTopic ||
                                   _step == _BotStep.askDetail))
                             _SuggestionStrip(
                               items: _suggestions,
                               onTap: (v) => unawaited(_onSuggestionTap(v)),
                               isDark: isDark,
+                              // Frais / périodes : icône à gauche pour gagner de la place.
+                              leadingIcon: _step == _BotStep.askDetail
+                                  ? (_topic == "fees"
+                                      ? Icons.payments_outlined
+                                      : Icons.date_range_outlined)
+                                  : null,
                             ),
-                          _TopicList(
-                            l10n: l10n,
-                            enabled: _step != _BotStep.loading,
-                            onTap: (topic) => unawaited(_startTopic(topic)),
-                            isDark: isDark,
-                          ),
+                          // Une seule liste (verticale + icônes) pour Frais / Notes / Bulletin.
+                          if (_step == _BotStep.idle ||
+                              _step == _BotStep.askTopic)
+                            _TopicList(
+                              l10n: l10n,
+                              enabled: _step != _BotStep.loading,
+                              onTap: (topic) => unawaited(_startTopic(topic)),
+                              isDark: isDark,
+                            ),
                           _ComposerBar(
                             controller: _input,
                             focusNode: _focus,
@@ -1132,17 +1143,82 @@ class _SuggestionStrip extends StatelessWidget {
     required this.items,
     required this.onTap,
     required this.isDark,
+    this.leadingIcon,
   });
 
   final List<String> items;
   final void Function(String) onTap;
   final bool isDark;
+  final IconData? leadingIcon;
 
   @override
   Widget build(BuildContext context) {
     final bar = isDark
         ? EteyeloColors.chatInputBarDark
         : EteyeloColors.chatInputBar;
+    final border = isDark
+        ? EteyeloColors.listDividerDark
+        : EteyeloColors.listDivider;
+    final textColor = isDark
+        ? EteyeloColors.bubbleIncomingTextDark
+        : EteyeloColors.bubbleIncomingText;
+
+    // Liste verticale + icône (frais / période) : plus compact que les chips.
+    if (leadingIcon != null) {
+      return Container(
+        width: double.infinity,
+        decoration: BoxDecoration(
+          color: bar,
+          border: Border(top: BorderSide(color: border)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (var i = 0; i < items.length; i++) ...[
+              if (i > 0) Divider(height: 1, color: border),
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () => onTap(items[i]),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 11,
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          leadingIcon,
+                          size: 22,
+                          color: EteyeloColors.primary,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            items[i],
+                            style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 15,
+                              color: textColor,
+                            ),
+                          ),
+                        ),
+                        const Icon(
+                          Icons.chevron_right,
+                          size: 20,
+                          color: EteyeloColors.bubbleMeta,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
     return Container(
       width: double.infinity,
       color: bar,
