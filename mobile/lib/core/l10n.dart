@@ -297,6 +297,41 @@ class L10n {
         "Here is the result for",
         "Aqui está o resultado para",
       );
+  String get parentBotAskTopic => _t(
+        "Que souhaitez-vous consulter ?",
+        "What would you like to check?",
+        "O que deseja consultar?",
+      );
+  String get parentBotAskFeeType => _t(
+        "Quel type de frais ?",
+        "Which fee type?",
+        "Qual tipo de propina?",
+      );
+  String get parentBotAskPeriod => _t(
+        "Quelle période ?",
+        "Which period?",
+        "Qual período?",
+      );
+  String get parentBotShowAll => _t(
+        "Tout afficher",
+        "Show all",
+        "Mostrar tudo",
+      );
+  String get parentBotPickedStudent => _t(
+        "Élève sélectionné",
+        "Selected student",
+        "Aluno selecionado",
+      );
+  String get parentBotNameMatches => _t(
+        "Plusieurs élèves correspondent. Lequel ?",
+        "Several students match. Which one?",
+        "Vários alunos correspondem. Qual?",
+      );
+  String get parentBotUnknownDetail => _t(
+        "Choix introuvable. Utilisez une suggestion.",
+        "Choice not found. Use a suggestion.",
+        "Escolha não encontrada. Use uma sugestão.",
+      );
   String get parentDue => _t("Dû", "Due", "Devido");
   String get parentPaid => _t("Payé", "Paid", "Pago");
   String get parentReste => _t("Reste", "Balance", "Restante");
