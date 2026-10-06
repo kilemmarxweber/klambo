@@ -119,6 +119,7 @@ class CallHub {
       debugPrint("[hub] ws connected");
       _emitLink("link.up");
       _scheduleCallFallback();
+      unawaited(controller.prefetchIceServers());
       final orgId = presence.organizationId ?? initialOrganizationId;
       if (orgId != null && orgId.isNotEmpty) {
         socket.subscribePresence(orgId);
@@ -235,7 +236,7 @@ class CallHub {
     }
   }
 
-  /// Offre livrée par la notification Android. Le média n'est créé qu'au décrochage.
+  /// Offre livrée par la notification Android (préchauffage ICE dès ringingIn).
   Future<void> consumeNativeCall() async {
     final pending = await BackgroundAlerts.takePendingCall();
     if (pending == null || controller.isDisposed) return;
@@ -545,16 +546,17 @@ class CallHub {
     String? callerName,
   }) async {
     try {
-      // S'assure que le WS est vivant avant de sonner « dans le vide ».
+      // WS + présence en parallèle — ne pas retarder l'offre de 1,2 s.
       if (!socket.isConnected) {
         socket.reconnectNow();
-        await Future<void>.delayed(const Duration(milliseconds: 800));
       }
-      await refreshPeerPresence(
-        organizationId: organizationId,
-        userId: calleeId,
+      unawaited(
+        refreshPeerPresence(
+          organizationId: organizationId,
+          userId: calleeId,
+        ),
       );
-      await Future<void>.delayed(const Duration(milliseconds: 400));
+      unawaited(controller.prefetchIceServers());
       final online = presence.isOnline(calleeId);
       if (!online) {
         debugPrint(

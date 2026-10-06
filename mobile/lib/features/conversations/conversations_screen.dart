@@ -33,6 +33,7 @@ import "package:klambo_messagerie/widgets/chat_wallpaper.dart";
 import "package:klambo_messagerie/widgets/connection_sync_bar.dart";
 import "package:klambo_messagerie/widgets/eteyelo_messaging_app_bar.dart";
 import "package:klambo_messagerie/widgets/group_avatar.dart";
+import "package:klambo_messagerie/widgets/parent_ai_fab.dart";
 import "package:klambo_messagerie/widgets/user_avatar.dart";
 
 class ConversationsScreen extends ConsumerStatefulWidget {
@@ -899,8 +900,6 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
             ),
             onSelected: (value) {
               switch (value) {
-                case "parent":
-                  unawaited(_openParentHub());
                 case "settings":
                   _openSettings();
                 case "refresh":
@@ -913,15 +912,6 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
               }
             },
             itemBuilder: (_) => [
-              PopupMenuItem(
-                value: "parent",
-                child: ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
-                  leading: const Icon(Icons.family_restroom_outlined),
-                  title: Text(l10n.parentHubTitle),
-                ),
-              ),
               PopupMenuItem(
                 value: "settings",
                 child: ListTile(
@@ -966,12 +956,23 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
           ),
         ],
       ),
-      floatingActionButton: canCompose
-          ? FloatingActionButton(
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          ParentAiFab(
+            tooltip: l10n.parentHubTitle,
+            onPressed: () => unawaited(_openParentHub()),
+          ),
+          if (canCompose) ...[
+            const SizedBox(height: 12),
+            FloatingActionButton(
               onPressed: _showComposeChooser,
               child: const Icon(Icons.add),
-            )
-          : null,
+            ),
+          ],
+        ],
+      ),
       body: Column(
         children: [
           if (_fromCache) const ConnectionSyncBar(),

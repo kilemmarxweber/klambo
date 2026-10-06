@@ -420,12 +420,82 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         final me = ref.read(sessionProvider).me?["user"];
         final myId = me is Map ? me["id"]?.toString() : null;
         if (senderId != null && senderId != myId) _clearPeerTyping();
+        // Appliquer le WS tout de suite (style WhatsApp) ; HTTP en filet.
+        if (_applyRealtimeCreated(event)) {
+          _threadRefresh?.cancel();
+          _threadRefresh = Timer(const Duration(milliseconds: 1800), () {
+            if (mounted) unawaited(_load(silent: true));
+          });
+          return;
+        }
       }
       _threadRefresh?.cancel();
       _threadRefresh = Timer(const Duration(milliseconds: 400), () {
         if (mounted) unawaited(_load(silent: true));
       });
     }
+  }
+
+  /// Insert / confirme un message depuis `message.created` sans attendre HTTP.
+  bool _applyRealtimeCreated(Map<String, dynamic> event) {
+    final id = event["messageId"]?.toString() ??
+        event["id"]?.toString() ??
+        (event["payload"] is Map
+            ? (event["payload"] as Map)["messageId"]?.toString()
+            : null);
+    if (id == null || id.isEmpty) return false;
+    if (_knownMessageIds.contains(id)) return true;
+    for (final m in _messages) {
+      if (m is Map && m["id"]?.toString() == id) {
+        _knownMessageIds.add(id);
+        return true;
+      }
+    }
+
+    final senderId = event["senderId"]?.toString();
+    final body = event["bodyPreview"]?.toString() ??
+        event["body"]?.toString() ??
+        "";
+    final me = ref.read(sessionProvider).me?["user"];
+    final myId = me is Map ? me["id"]?.toString() : null;
+
+    if (senderId != null && senderId == myId) {
+      final pendingIdx = _messages.lastIndexWhere((m) {
+        if (m is! Map || m["pending"] != true) return false;
+        if (body.isEmpty) return true;
+        return m["body"]?.toString() == body;
+      });
+      if (pendingIdx < 0) return false;
+      setState(() {
+        final copy = Map<String, dynamic>.from(_messages[pendingIdx] as Map);
+        copy["id"] = id;
+        copy["pending"] = false;
+        if (body.isNotEmpty) copy["body"] = body;
+        _messages[pendingIdx] = copy;
+      });
+      _knownMessageIds.add(id);
+      return true;
+    }
+
+    setState(() {
+      _messages = [
+        ..._messages,
+        {
+          "id": id,
+          "senderId": senderId,
+          "senderName": event["senderName"]?.toString() ?? "",
+          "senderImage": event["senderImage"],
+          "body": body,
+          "createdAt": DateTime.now().toUtc().toIso8601String(),
+          "attachments": const [],
+        },
+      ];
+    });
+    _knownMessageIds.add(id);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _scrollToBottom(force: true, animated: true);
+    });
+    return true;
   }
 
   @override
