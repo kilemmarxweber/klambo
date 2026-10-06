@@ -282,11 +282,11 @@ class CallController extends ChangeNotifier {
     return out;
   }
 
-  /// TURN 443 d'abord (Wi‑Fi publics / CGNAT), STUN ensuite.
+  /// TURN TLS (443 / 5349) d'abord, puis autre TURN, STUN ensuite.
   int _iceRank(dynamic urls) {
     final url = urls?.toString() ?? "";
     final isTurn = url.startsWith("turn:") || url.startsWith("turns:");
-    if (isTurn && url.contains(":443")) return 0;
+    if (isTurn && (url.contains(":443") || url.contains(":5349"))) return 0;
     if (isTurn) return 1;
     if (url.startsWith("stun:")) return 2;
     if (url.contains(":80")) return 3;
