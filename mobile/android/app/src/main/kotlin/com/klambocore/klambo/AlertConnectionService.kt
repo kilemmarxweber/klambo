@@ -22,6 +22,10 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
@@ -44,7 +48,7 @@ import kotlin.math.min
  */
 class AlertConnectionService : Service() {
     private val client = OkHttpClient.Builder()
-        .pingInterval(20, TimeUnit.SECONDS)
+        .pingInterval(15, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
     private var socket: WebSocket? = null
@@ -57,6 +61,9 @@ class AlertConnectionService : Service() {
     private var generation = 0
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var reconnect: Runnable? = null
+    private var wakeRenew: Runnable? = null
+    private var watchdog: Runnable? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val messageNotifIds = HashMap<String, Int>()
     private var messageSeq = 3000
     private var ringtone: Ringtone? = null
@@ -108,7 +115,7 @@ class AlertConnectionService : Service() {
                 return START_STICKY
             }
         }
-        acquireWakeLock()
+        startKeepAlive()
         if (socket == null) connect()
         return START_STICKY
     }
@@ -129,11 +136,13 @@ class AlertConnectionService : Service() {
         stopped = true
         AppVisibility.serviceRunning = false
         reconnect?.let { mainHandler.removeCallbacks(it) }
+        wakeRenew?.let { mainHandler.removeCallbacks(it) }
+        watchdog?.let { mainHandler.removeCallbacks(it) }
         ringTimeout?.let { mainHandler.removeCallbacks(it) }
+        unregisterNetworkCallback()
         stopRing()
         socket?.close(1000, "stop")
         socket = null
-        client.dispatcher.executorService.shutdown()
         releaseCallAudio()
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
@@ -186,12 +195,103 @@ class AlertConnectionService : Service() {
         callAudioHeld = false
     }
 
+    private fun startKeepAlive() {
+        acquireWakeLock()
+        scheduleWakeRenew()
+        scheduleWatchdog()
+        registerNetworkCallback()
+    }
+
     private fun acquireWakeLock() {
-        if (wakeLock?.isHeld == true) return
-        val pm = getSystemService(PowerManager::class.java)
+        val pm = getSystemService(PowerManager::class.java) ?: return
+        if (wakeLock?.isHeld == true) {
+            // Renouveler la durée avant expiration Doze.
+            try {
+                wakeLock?.acquire(60 * 60 * 1000L)
+            } catch (_: Exception) {
+            }
+            return
+        }
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "klambo:alerts").apply {
             setReferenceCounted(false)
-            acquire(8 * 60 * 60 * 1000L)
+            acquire(60 * 60 * 1000L)
+        }
+    }
+
+    private fun scheduleWakeRenew() {
+        wakeRenew?.let { mainHandler.removeCallbacks(it) }
+        if (stopped) return
+        val task = Runnable {
+            if (stopped) return@Runnable
+            acquireWakeLock()
+            try {
+                // Rafraîchit la notif FGS : certains OEM tuent les services « silencieux ».
+                if (!callAudioHeld) {
+                    startMessagingForeground(ongoingNotification())
+                }
+            } catch (error: Exception) {
+                android.util.Log.w("klambo", "renew foreground", error)
+            }
+            scheduleWakeRenew()
+        }
+        wakeRenew = task
+        mainHandler.postDelayed(task, 25 * 60 * 1000L)
+    }
+
+    private fun scheduleWatchdog() {
+        watchdog?.let { mainHandler.removeCallbacks(it) }
+        if (stopped) return
+        val task = Runnable {
+            if (stopped) return@Runnable
+            if (socket == null) {
+                android.util.Log.i("klambo", "watchdog: WS mort → reconnect")
+                connect()
+            }
+            scheduleWatchdog()
+        }
+        watchdog = task
+        mainHandler.postDelayed(task, 20_000L)
+    }
+
+    private fun registerNetworkCallback() {
+        if (networkCallback != null) return
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                if (stopped) return
+                mainHandler.post {
+                    if (stopped) return@post
+                    if (socket == null) {
+                        attempt = 0
+                        connect()
+                    }
+                }
+            }
+        }
+        networkCallback = cb
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                cm.registerDefaultNetworkCallback(cb)
+            } else {
+                cm.registerNetworkCallback(
+                    NetworkRequest.Builder()
+                        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        .build(),
+                    cb,
+                )
+            }
+        } catch (error: Exception) {
+            android.util.Log.w("klambo", "network callback", error)
+            networkCallback = null
+        }
+    }
+
+    private fun unregisterNetworkCallback() {
+        val cb = networkCallback ?: return
+        networkCallback = null
+        try {
+            getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb)
+        } catch (_: Exception) {
         }
     }
 
@@ -215,7 +315,10 @@ class AlertConnectionService : Service() {
         val request = Request.Builder().url(url).build()
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                if (gen == generation) attempt = 0
+                if (gen == generation) {
+                    attempt = 0
+                    acquireWakeLock()
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {

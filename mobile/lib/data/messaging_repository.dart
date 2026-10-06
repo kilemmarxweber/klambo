@@ -1,3 +1,4 @@
+import "dart:async";
 import "dart:typed_data";
 
 import "package:dio/dio.dart";
@@ -57,7 +58,8 @@ class MessagingRepository {
         query: {if (cursor != null) "cursor": cursor},
       );
       final items = (data["items"] as List?) ?? [];
-      await _cache.saveMessages(organizationId, conversationId, items);
+      // Cache hors chemin critique : ne bloque pas l'affichage du fil.
+      unawaited(_cache.saveMessages(organizationId, conversationId, items));
       return {...data, "fromCache": false};
     } catch (e) {
       final cached = await _cache.getMessages(organizationId, conversationId);

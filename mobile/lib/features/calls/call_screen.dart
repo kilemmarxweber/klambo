@@ -89,7 +89,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
       case CallPhase.ringingOut:
         return peerReachable ? l10n.callRingingOut : l10n.callPeerAway;
       case CallPhase.ringingIn:
-        return l10n.callRingingIn;
+        return _c.isAccepting ? l10n.callConnecting : l10n.callRingingIn;
       case CallPhase.connecting:
         return l10n.callConnecting;
       case CallPhase.active:
@@ -166,7 +166,8 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                       const SizedBox(height: 8),
                       AnimatedSwitcher(
                         duration: const Duration(milliseconds: 220),
-                        child: _c.phase == CallPhase.connecting
+                        child: (_c.phase == CallPhase.connecting ||
+                                _c.isAccepting)
                             ? const CallConnectPulse(key: ValueKey("link"))
                             : Text(
                                 key: ValueKey(
@@ -308,7 +309,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
           color: const Color(0xFF0B6E4F),
           icon: Icons.call,
           label: l10n.callAccept,
-          onTap: _actionBusy
+          onTap: _actionBusy || _c.isAccepting
               ? null
               : () => _safeAction(() => _c.acceptIncoming()),
         ),

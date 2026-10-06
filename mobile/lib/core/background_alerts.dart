@@ -122,7 +122,7 @@ class BackgroundAlerts {
     } catch (_) {}
   }
 
-  /// Une seule demande : batterie + affichage par-dessus l'écran verrouillé.
+  /// Une seule demande : batterie (sinon Doze coupe messages/appels verrouillés).
   static Future<void> _askCallPrivilegesOnce() async {
     if (!_android) return;
     try {
@@ -132,6 +132,18 @@ class BackgroundAlerts {
       await _channel.invokeMethod<bool>("prepareIncomingCalls");
     } catch (e) {
       debugPrint("[bg] privileges: $e");
+    }
+  }
+
+  /// Relance le service FGS (après retour premier plan / long verrouillage).
+  static Future<void> ensureAlive() async {
+    if (!_android) return;
+    await touch();
+    try {
+      await _channel.invokeMethod<void>("start");
+      serviceStarted = true;
+    } catch (e) {
+      debugPrint("[bg] ensureAlive: $e");
     }
   }
 }

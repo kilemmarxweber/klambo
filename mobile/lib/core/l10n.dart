@@ -249,9 +249,54 @@ class L10n {
       );
   String get parentFees => _t("Frais", "Fees", "Propinas");
   String get parentGrades =>
-      _t("Notes / période", "Grades / period", "Notas / período");
+      _t("Notes", "Grades", "Notas");
   String get parentBulletin =>
-      _t("Bulletin PDF", "Report card PDF", "Boletim PDF");
+      _t("Bulletin", "Report card", "Boletim");
+  String get parentBotWelcome => _t(
+        "Bonjour 👋 Choisissez Frais, Notes ou Bulletin ci-dessous — ou tapez votre demande.",
+        "Hi 👋 Pick Fees, Grades or Report card below — or type your request.",
+        "Olá 👋 Escolha Propinas, Notas ou Boletim abaixo — ou escreva o pedido.",
+      );
+  String get parentBotAskClass => _t(
+        "Quelle classe ?",
+        "Which class?",
+        "Qual turma?",
+      );
+  String get parentBotAskName => _t(
+        "Quel élève ?",
+        "Which student?",
+        "Qual aluno?",
+      );
+  String get parentBotLoading => _t(
+        "Chargement…",
+        "Loading…",
+        "A carregar…",
+      );
+  String get parentBotUnknownClass => _t(
+        "Classe introuvable. Choisissez parmi les suggestions.",
+        "Class not found. Pick one of the suggestions.",
+        "Turma não encontrada. Escolha uma sugestão.",
+      );
+  String get parentBotUnknownName => _t(
+        "Élève introuvable. Choisissez parmi les suggestions.",
+        "Student not found. Pick one of the suggestions.",
+        "Aluno não encontrado. Escolha uma sugestão.",
+      );
+  String get parentBotHint => _t(
+        "Écrire une classe ou un nom…",
+        "Type a class or name…",
+        "Escrever turma ou nome…",
+      );
+  String get parentBotHintIdle => _t(
+        "Ex. Frais, Notes, Bulletin…",
+        "E.g. Fees, Grades, Report…",
+        "Ex. Propinas, Notas, Boletim…",
+      );
+  String get parentBotResultFor => _t(
+        "Voici le résultat pour",
+        "Here is the result for",
+        "Aqui está o resultado para",
+      );
   String get parentDue => _t("Dû", "Due", "Devido");
   String get parentPaid => _t("Payé", "Paid", "Pago");
   String get parentReste => _t("Reste", "Balance", "Restante");

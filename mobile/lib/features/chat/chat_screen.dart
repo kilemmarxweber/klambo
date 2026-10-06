@@ -420,9 +420,102 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         final me = ref.read(sessionProvider).me?["user"];
         final myId = me is Map ? me["id"]?.toString() : null;
         if (senderId != null && senderId != myId) _clearPeerTyping();
+        // Appliquer tout de suite (pas de refetch HTTP qui bloque le fil).
+        _applyRealtimeCreated(event);
+        return;
       }
       _threadRefresh?.cancel();
       _threadRefresh = Timer(const Duration(milliseconds: 400), () {
+        if (mounted) unawaited(_load(silent: true));
+      });
+    }
+  }
+
+  /// Insère un message peer depuis le WS ; ignore l'écho de nos propres envois.
+  void _applyRealtimeCreated(Map<String, dynamic> event) {
+    final payload = event["payload"];
+    final p = payload is Map
+        ? Map<String, dynamic>.from(payload)
+        : const <String, dynamic>{};
+    final message = event["message"];
+    final m = message is Map
+        ? Map<String, dynamic>.from(message)
+        : const <String, dynamic>{};
+
+    final messageId = (event["messageId"] ??
+            p["id"] ??
+            p["messageId"] ??
+            m["id"] ??
+            event["id"])
+        ?.toString();
+    final senderId = (event["senderId"] ??
+            p["senderId"] ??
+            m["senderId"] ??
+            (p["sender"] is Map ? (p["sender"] as Map)["id"] : null))
+        ?.toString();
+    final me = ref.read(sessionProvider).me?["user"];
+    final myId = me is Map ? me["id"]?.toString() : null;
+
+    // Écho de notre envoi : déjà confirmé via POST / bulle optimiste.
+    if (senderId != null && myId != null && senderId == myId) {
+      if (messageId != null && messageId.isNotEmpty) {
+        _confirmOptimisticByServerId(messageId);
+      }
+      return;
+    }
+
+    if (messageId != null &&
+        messageId.isNotEmpty &&
+        _messages.any((msg) => msg["id"]?.toString() == messageId)) {
+      return;
+    }
+
+    final body = (m["body"] ??
+            p["body"] ??
+            event["body"] ??
+            event["bodyPreview"] ??
+            p["bodyPreview"] ??
+            p["text"] ??
+            "")
+        .toString();
+    final senderName = (event["senderName"] ??
+            p["senderName"] ??
+            m["senderName"] ??
+            (p["sender"] is Map ? (p["sender"] as Map)["name"] : null) ??
+            "")
+        .toString();
+    final createdAt = (m["createdAt"] ??
+            p["createdAt"] ??
+            event["createdAt"] ??
+            DateTime.now().toUtc().toIso8601String())
+        .toString();
+    final attachments = m["attachments"] ?? p["attachments"] ?? const [];
+
+    if (!mounted) return;
+    setState(() {
+      _messages = [
+        ..._messages,
+        {
+          "id": messageId ?? "rt-${const Uuid().v4()}",
+          "senderId": senderId,
+          "senderName": senderName,
+          "body": body,
+          "createdAt": createdAt,
+          "pending": false,
+          "attachments": attachments is List ? attachments : const [],
+          if (m["replyTo"] != null) "replyTo": m["replyTo"],
+          if (p["replyTo"] != null && m["replyTo"] == null)
+            "replyTo": p["replyTo"],
+        },
+      ];
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToBottom(force: false, animated: true);
+    });
+    // Pièces jointes / champs complets : rattrapage discret sans bloquer l'UI.
+    if (attachments is! List || attachments.isEmpty) {
+      _threadRefresh?.cancel();
+      _threadRefresh = Timer(const Duration(milliseconds: 1200), () {
         if (mounted) unawaited(_load(silent: true));
       });
     }
@@ -739,8 +832,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final me = ref.read(sessionProvider).me?["user"];
       final myId = me is Map ? me["id"]?.toString() : null;
       final inferred = inferPeerLastReadAt(mapped, myId);
+      // Ne pas écraser les bulles encore en vol (envoi immédiat).
+      final inflight = _messages
+          .where((msg) {
+            final id = msg["id"]?.toString() ?? "";
+            return msg["pending"] == true ||
+                msg["failed"] == true ||
+                id.startsWith("local-");
+          })
+          .map((msg) => Map<String, dynamic>.from(msg as Map))
+          .where((msg) {
+            final sid = msg["id"]?.toString() ?? "";
+            if (!sid.startsWith("local-") &&
+                mapped.any((m) => m["id"]?.toString() == sid)) {
+              return false;
+            }
+            return true;
+          })
+          .toList();
       setState(() {
-        _messages = mapped;
+        _messages = [...mapped, ...inflight];
         _loading = false;
         _fromCache = fromCache;
         _sendError = null;
@@ -764,10 +875,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       });
       if (!fromCache) {
         _chimeNewChatMessages(mapped, myId);
-        await repo.conversationAction(
-          widget.organizationId,
-          widget.conversationId,
-          "read",
+        unawaited(
+          repo.conversationAction(
+            widget.organizationId,
+            widget.conversationId,
+            "read",
+          ),
         );
       }
       if (_isNoReplyConversation) {
@@ -1383,18 +1496,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
-  void _appendOptimisticText({
+  String _appendOptimisticText({
     required String body,
     required String? userId,
     String? replyToId,
     Map? replyTo,
+    String? clientMessageId,
   }) {
-    final localId = "local-${const Uuid().v4()}";
+    final cid = clientMessageId ?? const Uuid().v4();
     setState(() {
       _messages = [
         ..._messages,
         {
-          "id": localId,
+          "id": "local-$cid",
+          "clientMessageId": cid,
           "senderId": userId,
           "senderName": "",
           "body": body,
@@ -1413,16 +1528,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToBottom(force: true, animated: true);
     });
+    return cid;
   }
 
-  void _appendOptimisticMedia({
+  String _appendOptimisticMedia({
     required String body,
     required PendingAttachment att,
     required String? userId,
+    String? clientMessageId,
   }) {
-    final localId = "local-${const Uuid().v4()}";
+    final cid = clientMessageId ?? const Uuid().v4();
     final attachment = <String, dynamic>{
-      "id": localId,
+      "id": "local-$cid",
       "kind": att.kind == PendingAttachmentKind.image
           ? "IMAGE"
           : att.kind == PendingAttachmentKind.audio
@@ -1438,7 +1555,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       _messages = [
         ..._messages,
         {
-          "id": localId,
+          "id": "local-$cid",
+          "clientMessageId": cid,
           "senderId": userId,
           "senderName": "",
           "body": body,
@@ -1451,6 +1569,69 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToBottom(force: true, animated: true);
     });
+    return cid;
+  }
+
+  void _confirmOptimistic(String clientMessageId, String? serverId) {
+    if (!mounted) return;
+    setState(() {
+      _messages = [
+        for (final msg in _messages)
+          if (msg["clientMessageId"]?.toString() == clientMessageId ||
+              msg["id"]?.toString() == "local-$clientMessageId")
+            {
+              ...Map<String, dynamic>.from(msg as Map),
+              "id": (serverId != null && serverId.isNotEmpty)
+                  ? serverId
+                  : msg["id"],
+              "pending": false,
+              "failed": false,
+              "clientMessageId": clientMessageId,
+            }
+          else
+            msg,
+      ];
+    });
+  }
+
+  void _confirmOptimisticByServerId(String serverId) {
+    if (!mounted) return;
+    final has = _messages.any((msg) => msg["id"]?.toString() == serverId);
+    if (has) return;
+    // Si un pending existe encore (course WS / POST), le rattacher.
+    final pendingIdx = _messages.lastIndexWhere(
+      (msg) =>
+          msg["pending"] == true &&
+          (msg["id"]?.toString() ?? "").startsWith("local-"),
+    );
+    if (pendingIdx < 0) return;
+    setState(() {
+      final copy = [..._messages];
+      final msg = Map<String, dynamic>.from(copy[pendingIdx] as Map);
+      msg["id"] = serverId;
+      msg["pending"] = false;
+      msg["failed"] = false;
+      copy[pendingIdx] = msg;
+      _messages = copy;
+    });
+  }
+
+  void _failOptimistic(String clientMessageId) {
+    if (!mounted) return;
+    setState(() {
+      _messages = [
+        for (final msg in _messages)
+          if (msg["clientMessageId"]?.toString() == clientMessageId ||
+              msg["id"]?.toString() == "local-$clientMessageId")
+            {
+              ...Map<String, dynamic>.from(msg as Map),
+              "pending": false,
+              "failed": true,
+            }
+          else
+            msg,
+      ];
+    });
   }
 
   Future<void> _send(
@@ -1458,78 +1639,127 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     List<PendingAttachment> attachments,
   ) async {
     if (_composerBlocked) return;
-    if (_sending) return;
     if (text.isEmpty && attachments.isEmpty) return;
+    // Texte : envoi parallèle (realtime). Médias : un à la fois (upload).
+    if (attachments.isNotEmpty && _sending) return;
     final l10n = ref.read(l10nProvider);
     final myId = ref.read(sessionProvider).me?["user"];
     final userId = myId is Map ? myId["id"]?.toString() : null;
-    setState(() {
-      _sending = true;
-      _sendError = null;
-    });
-    try {
-      final repo = ref.read(messagingRepositoryProvider);
-      var captionUsed = false;
+    final repo = ref.read(messagingRepositoryProvider);
+    final replySnapshot = _replyTo;
+    final replyId = replySnapshot?["id"]?.toString();
 
+    if (mounted) {
+      setState(() {
+        _sendError = null;
+        _replyTo = null;
+        if (attachments.isNotEmpty) _sending = true;
+      });
+    }
+    unawaited(_clearDraft());
+
+    try {
       if (attachments.isEmpty) {
+        final clientId = const Uuid().v4();
         _appendOptimisticText(
           body: text,
           userId: userId,
-          replyToId: _replyTo?["id"]?.toString(),
-          replyTo: _replyTo,
+          replyToId: replyId,
+          replyTo: replySnapshot,
+          clientMessageId: clientId,
         );
-        await repo.sendMessage(
-          widget.organizationId,
-          widget.conversationId,
-          body: text,
-          replyToId: _replyTo?["id"]?.toString(),
-          clientMessageId: const Uuid().v4(),
+        // Ne bloque pas le composer : confirmation en arrière-plan.
+        unawaited(() async {
+          try {
+            final res = await repo.sendMessage(
+              widget.organizationId,
+              widget.conversationId,
+              body: text,
+              replyToId: replyId,
+              clientMessageId: clientId,
+            );
+            _confirmOptimistic(
+              clientId,
+              res["messageId"]?.toString() ?? res["id"]?.toString(),
+            );
+          } catch (_) {
+            _failOptimistic(clientId);
+            if (mounted) setState(() => _sendError = l10n.sendFailed);
+          }
+        }());
+        return;
+      }
+
+      var captionUsed = false;
+      for (var i = 0; i < attachments.length; i++) {
+        final att = attachments[i];
+        final caption = (!captionUsed && text.isNotEmpty) ? text : "";
+        if (caption.isNotEmpty) captionUsed = true;
+        final clientId = const Uuid().v4();
+        _appendOptimisticMedia(
+          body: caption.isNotEmpty
+              ? caption
+              : att.kind == PendingAttachmentKind.image
+                  ? "[image]"
+                  : att.kind == PendingAttachmentKind.audio
+                      ? "[audio]"
+                      : "[file]",
+          att: att,
+          userId: userId,
+          clientMessageId: clientId,
         );
-      } else {
-        for (var i = 0; i < attachments.length; i++) {
-          final att = attachments[i];
-          final caption = (!captionUsed && text.isNotEmpty) ? text : "";
-          if (caption.isNotEmpty) captionUsed = true;
-          _appendOptimisticMedia(
-            body: caption.isNotEmpty
-                ? caption
-                : att.kind == PendingAttachmentKind.image
-                    ? "[image]"
-                    : att.kind == PendingAttachmentKind.audio
-                        ? "[audio]"
-                        : "[file]",
-            att: att,
-            userId: userId,
-          );
-          await repo.sendMediaMessage(
+        try {
+          final res = await repo.sendMediaMessage(
             widget.organizationId,
             widget.conversationId,
             bytes: att.bytes,
             filename: att.filename,
             mimeType: att.mimeType,
             body: caption,
-            clientMessageId: const Uuid().v4(),
+            clientMessageId: clientId,
             durationMs: att.durationMs,
           );
+          _confirmOptimistic(
+            clientId,
+            res["messageId"]?.toString() ?? res["id"]?.toString(),
+          );
+        } catch (e) {
+          _failOptimistic(clientId);
+          rethrow;
         }
-        if (text.isNotEmpty && !captionUsed) {
-          _appendOptimisticText(body: text, userId: userId);
-          await repo.sendMessage(
+      }
+      if (text.isNotEmpty && !captionUsed) {
+        final clientId = const Uuid().v4();
+        _appendOptimisticText(
+          body: text,
+          userId: userId,
+          replyToId: replyId,
+          replyTo: replySnapshot,
+          clientMessageId: clientId,
+        );
+        try {
+          final res = await repo.sendMessage(
             widget.organizationId,
             widget.conversationId,
             body: text,
-            replyToId: _replyTo?["id"]?.toString(),
-            clientMessageId: const Uuid().v4(),
+            replyToId: replyId,
+            clientMessageId: clientId,
           );
+          _confirmOptimistic(
+            clientId,
+            res["messageId"]?.toString() ?? res["id"]?.toString(),
+          );
+        } catch (e) {
+          _failOptimistic(clientId);
+          rethrow;
         }
       }
-      if (mounted) setState(() => _replyTo = null);
-      unawaited(_clearDraft());
-      await _load(silent: true);
     } catch (e) {
-      setState(() => _sendError = l10n.sendFailed);
+      if (mounted) setState(() => _sendError = l10n.sendFailed);
     } finally {
-      if (mounted) setState(() => _sending = false);
+      if (mounted && attachments.isNotEmpty) {
+        setState(() => _sending = false);
+      }
     }
   }
 

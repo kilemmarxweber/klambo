@@ -481,16 +481,7 @@ class CallHub {
     final callLive =
         phase == CallPhase.connecting || phase == CallPhase.active;
     unawaited(setLockScreenVisible(callLive));
-    if (callLive) {
-      final peer = controller.active?.peerName?.trim();
-      final name = (peer != null && peer.isNotEmpty) ? peer : "Klambo";
-      unawaited(
-        BackgroundAlerts.setCallOngoing(
-          name: name,
-          video: controller.active?.kind == "VIDEO",
-        ),
-      );
-    } else if (phase == CallPhase.idle || phase == CallPhase.ended) {
+    if (phase == CallPhase.idle || phase == CallPhase.ended) {
       unawaited(BackgroundAlerts.setCallIdle());
       final callId = controller.active?.callId;
       if (!kIsWeb &&
@@ -516,10 +507,25 @@ class CallHub {
           ),
         );
       }
-    } else {
-      unawaited(SoundService.instance.stopRingtone());
-      unawaited(NotificationService.instance.cancelIncomingCallNotification());
+      return;
     }
+
+    // Stop sonnerie avant setCallOngoing pour éviter le silence micro.
+    unawaited(() async {
+      await SoundService.instance.stopRingtone();
+      await NotificationService.instance.cancelIncomingCallNotification();
+      if (!callLive) return;
+      if (controller.phase != CallPhase.connecting &&
+          controller.phase != CallPhase.active) {
+        return;
+      }
+      final peer = controller.active?.peerName?.trim();
+      final name = (peer != null && peer.isNotEmpty) ? peer : "Klambo";
+      await BackgroundAlerts.setCallOngoing(
+        name: name,
+        video: controller.active?.kind == "VIDEO",
+      );
+    }());
   }
 
   void setActiveOrganization(String organizationId) {
@@ -561,7 +567,7 @@ class CallHub {
           "[hub] callee $calleeId appears offline — offer will still be sent/retried",
         );
       }
-      unawaited(SoundService.instance.startRingtone(incoming: false));
+      // Bip après getUserMedia (sinon le 1er appel reste muet).
       await controller.startOutgoing(
         organizationId: organizationId,
         calleeId: calleeId,

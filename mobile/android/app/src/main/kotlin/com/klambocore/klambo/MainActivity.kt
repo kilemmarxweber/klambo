@@ -4,8 +4,11 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -87,6 +90,9 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     "pushToken" -> result.success(null)
+                    "prepareIncomingCalls" -> {
+                        result.success(requestBatteryExemption())
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -145,6 +151,28 @@ class MainActivity : FlutterActivity() {
         try {
             player.release()
         } catch (_: Exception) {
+        }
+    }
+
+    /** Demande l'exemption batterie : sinon Doze tue le WS écran verrouillé. */
+    private fun requestBatteryExemption(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        val pm = getSystemService(PowerManager::class.java) ?: return false
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return true
+        return try {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                },
+            )
+            true
+        } catch (_: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                true
+            } catch (_: Exception) {
+                false
+            }
         }
     }
 

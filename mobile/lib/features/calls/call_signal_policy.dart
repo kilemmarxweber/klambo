@@ -52,7 +52,8 @@ bool remoteCallFinished(String? status) {
 }
 
 /// Décrocher depuis la notif seulement si l'appel sonne encore.
-/// Le PeerConnection est créé ensuite par `acceptIncoming`.
+/// Le PeerConnection est préchauffé dès `ringingIn` ; `acceptIncoming` n'ajoute
+/// plus que le micro et la réponse SDP.
 bool shouldAutoAcceptNative({
   required bool requested,
   required bool ringingIn,
