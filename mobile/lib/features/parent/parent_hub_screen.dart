@@ -11,7 +11,7 @@ final parentRepositoryProvider = Provider<ParentRepository>(
   (ref) => ParentRepository(ref.watch(apiClientProvider)),
 );
 
-enum _BotStep { idle, askClass, askName, loading }
+enum _BotStep { idle, askClass, askName, askTopic, askDetail, loading }
 
 enum _MsgKind { text, result, error }
 
@@ -45,7 +45,7 @@ class _ChatMsg {
   final String? studentId;
 }
 
-/// Hub parent en mode chatbot (Telegram) : sujet → classe → élève → résultat.
+/// Hub parent en mode chatbot : sujet ↔ classe ↔ élève (multi-classes OK).
 class ParentHubScreen extends ConsumerStatefulWidget {
   const ParentHubScreen({super.key, required this.organizationId});
 
@@ -70,6 +70,13 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
   String? _className;
   Map<String, dynamic>? _student;
   List<String> _suggestions = [];
+  /// Libellé chip → élève (ex. « Marie Dupont · 6ème A »).
+  final Map<String, Map<String, dynamic>> _studentByLabel = {};
+  /// Réponse API complète avant filtre frais / période.
+  Map<String, dynamic>? _rawData;
+  /// Libellé chip → entrée frais ou période (ou marqueur « tout »).
+  final Map<String, Map<String, dynamic>> _detailByLabel = {};
+  static const _allDetailId = "__all__";
 
   L10n get _l10n => L10n.of(LocaleController.instance.lang);
 
@@ -81,10 +88,25 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
 
   @override
   void dispose() {
+    _wipeChat();
     _input.dispose();
     _scroll.dispose();
     _focus.dispose();
     super.dispose();
+  }
+
+  /// Pas de persistance : tout est effacé en quittant l’espace parent.
+  void _wipeChat() {
+    _messages.clear();
+    _rawData = null;
+    _detailByLabel.clear();
+    _studentByLabel.clear();
+    _suggestions = [];
+    _step = _BotStep.idle;
+    _topic = null;
+    _className = null;
+    _student = null;
+    _input.clear();
   }
 
   Future<void> _boot() async {
@@ -129,8 +151,60 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
   List<Map<String, dynamic>> _childrenInClass(String className) {
     final key = className.trim().toLowerCase();
     return _children
-        .where((c) => (c["className"]?.toString() ?? "").trim().toLowerCase() == key)
+        .where(
+          (c) =>
+              (c["className"]?.toString() ?? "").trim().toLowerCase() == key,
+        )
         .toList();
+  }
+
+  bool _poolSpansClasses(List<Map<String, dynamic>> pool) {
+    final seen = <String>{};
+    for (final c in pool) {
+      final name = (c["className"]?.toString() ?? "").trim().toLowerCase();
+      if (name.isEmpty) continue;
+      seen.add(name);
+      if (seen.length > 1) return true;
+    }
+    return false;
+  }
+
+  String _fullName(Map<String, dynamic> child) =>
+      (child["fullName"]?.toString() ?? "").trim();
+
+  String _classOf(Map<String, dynamic> child) =>
+      (child["className"]?.toString() ?? "").trim();
+
+  /// Nom + classe si plusieurs classes (évite l’ambiguïté entre frères/sœurs).
+  String _childLabel(
+    Map<String, dynamic> child, {
+    List<Map<String, dynamic>>? pool,
+  }) {
+    final name = _fullName(child);
+    final cls = _classOf(child);
+    final showClass = cls.isNotEmpty &&
+        (_classes.length > 1 ||
+            (pool != null && _poolSpansClasses(pool)));
+    return showClass ? "$name · $cls" : name;
+  }
+
+  List<String> _nameLabels(List<Map<String, dynamic>> kids) {
+    _studentByLabel.clear();
+    final labels = <String>[];
+    for (final c in kids) {
+      final name = _fullName(c);
+      if (name.isEmpty) continue;
+      final label = _childLabel(c, pool: kids);
+      // Collision rare : suffixe studentId court.
+      var unique = label;
+      if (_studentByLabel.containsKey(unique)) {
+        final id = c["studentId"]?.toString() ?? "";
+        unique = id.length >= 4 ? "$label (${id.substring(0, 4)})" : "$label ·";
+      }
+      _studentByLabel[unique] = c;
+      labels.add(unique);
+    }
+    return labels;
   }
 
   String _topicLabel(String topic) => switch (topic) {
@@ -138,6 +212,12 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
         "grades" => _l10n.parentGrades,
         _ => _l10n.parentBulletin,
       };
+
+  List<String> get _topicSuggestions => [
+        _l10n.parentFees,
+        _l10n.parentGrades,
+        _l10n.parentBulletin,
+      ];
 
   void _scrollToEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -171,31 +251,177 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
     _className = null;
     _student = null;
     _suggestions = [];
+    _studentByLabel.clear();
+    _rawData = null;
+    _detailByLabel.clear();
   }
 
-  Future<void> _startTopic(String topic) async {
+  void _removeTrailingLoading() {
+    if (_messages.isNotEmpty &&
+        _messages.last.kind == _MsgKind.text &&
+        !_messages.last.mine &&
+        _messages.last.text == _l10n.parentBotLoading) {
+      _messages.removeLast();
+    }
+  }
+
+  String _feeItemLabel(Map raw) {
+    final name = (raw["nameFrais"] ??
+            raw["typeFrais"] ??
+            raw["type"] ??
+            raw["category"] ??
+            raw["label"] ??
+            raw["name"])
+        ?.toString()
+        .trim();
+    return (name == null || name.isEmpty) ? "—" : name;
+  }
+
+  String _periodItemLabel(Map raw) {
+    final name = (raw["label"] ??
+            raw["periodLabel"] ??
+            raw["name"] ??
+            raw["periodName"])
+        ?.toString()
+        .trim();
+    return (name == null || name.isEmpty) ? "—" : name;
+  }
+
+  List<Map<String, dynamic>> _feeItems(Map<String, dynamic> data) {
+    final fees = (data["fees"] as List?) ?? const [];
+    return fees
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+  }
+
+  List<Map<String, dynamic>> _periodItems(Map<String, dynamic> data) {
+    final periods = (data["periods"] as List?) ?? const [];
+    return periods
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+  }
+
+  /// Options distinctes à proposer (types de frais ou périodes).
+  List<Map<String, dynamic>> _detailOptions(
+    String topic,
+    Map<String, dynamic> data,
+  ) {
+    if (topic == "fees") {
+      final seen = <String>{};
+      final out = <Map<String, dynamic>>[];
+      for (final f in _feeItems(data)) {
+        final label = _feeItemLabel(f);
+        if (!seen.add(label.toLowerCase())) continue;
+        out.add(f);
+      }
+      return out;
+    }
+    final seen = <String>{};
+    final out = <Map<String, dynamic>>[];
+    for (final p in _periodItems(data)) {
+      final label = _periodItemLabel(p);
+      if (!seen.add(label.toLowerCase())) continue;
+      out.add(p);
+    }
+    return out;
+  }
+
+  List<String> _buildDetailSuggestions(
+    String topic,
+    List<Map<String, dynamic>> options,
+  ) {
+    _detailByLabel.clear();
+    final labels = <String>[];
+    if (options.length > 1) {
+      final all = _l10n.parentBotShowAll;
+      _detailByLabel[all] = {_allDetailId: true};
+      labels.add(all);
+    }
+    for (final item in options) {
+      final base =
+          topic == "fees" ? _feeItemLabel(item) : _periodItemLabel(item);
+      var unique = base;
+      var n = 2;
+      while (_detailByLabel.containsKey(unique)) {
+        unique = "$base ($n)";
+        n++;
+      }
+      _detailByLabel[unique] = item;
+      labels.add(unique);
+    }
+    return labels;
+  }
+
+  Map<String, dynamic> _filterPanelData({
+    required String topic,
+    required Map<String, dynamic> raw,
+    required Map<String, dynamic>? choice,
+  }) {
+    if (choice == null || choice[_allDetailId] == true) {
+      return Map<String, dynamic>.from(raw);
+    }
+    if (topic == "fees") {
+      final want = _feeItemLabel(choice).toLowerCase();
+      final fees = _feeItems(raw)
+          .where((f) => _feeItemLabel(f).toLowerCase() == want)
+          .toList();
+      var due = 0.0;
+      var paid = 0.0;
+      var reste = 0.0;
+      for (final f in fees) {
+        due += (f["due"] as num?)?.toDouble() ?? 0;
+        paid += (f["paid"] as num?)?.toDouble() ?? 0;
+        reste += (f["reste"] as num?)?.toDouble() ?? 0;
+      }
+      return {
+        ...raw,
+        "fees": fees,
+        "totalDue": due,
+        "totalPaid": paid,
+        "totalReste": reste,
+      };
+    }
+    final want = _periodItemLabel(choice).toLowerCase();
+    final periods = _periodItems(raw)
+        .where((p) => _periodItemLabel(p).toLowerCase() == want)
+        .toList();
+    return {
+      ...raw,
+      "periods": periods,
+    };
+  }
+
+  /// Démarre ou complète un sujet (conserve élève/classe déjà choisis).
+  Future<void> _startTopic(String topic, {bool echoUser = true}) async {
     if (_step == _BotStep.loading) return;
-    final label = _topicLabel(topic);
-    _pushUser(label);
-    setState(() {
-      _topic = topic;
-      _className = null;
-      _student = null;
-    });
+    if (echoUser) _pushUser(_topicLabel(topic));
+    setState(() => _topic = topic);
+
+    if (_student != null) {
+      await _continueAfterStudent();
+      return;
+    }
+
+    if (_className != null) {
+      await _askOrPickName(_childrenInClass(_className!));
+      return;
+    }
 
     final classes = _classes;
     if (classes.isEmpty) {
-      // Pas de classe renseignée : proposer directement les noms.
       await _askOrPickName(_children);
       return;
     }
     if (classes.length == 1) {
-      await _selectClass(classes.first, silent: false);
+      await _selectClass(classes.first, silent: _children.length == 1);
       return;
     }
     setState(() {
       _step = _BotStep.askClass;
       _suggestions = classes;
+      _studentByLabel.clear();
     });
     _pushBot(_l10n.parentBotAskClass, suggestions: classes);
   }
@@ -212,47 +438,120 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
       });
       return;
     }
+    // Élève déjà choisi ailleurs : vérifier qu'il est dans cette classe.
+    final current = _student;
+    if (current != null) {
+      final sid = current["studentId"]?.toString();
+      final inClass = kids.any((c) => c["studentId"]?.toString() == sid);
+      if (inClass) {
+        await _continueAfterStudent();
+        return;
+      }
+    }
     await _askOrPickName(kids);
   }
 
   Future<void> _askOrPickName(List<Map<String, dynamic>> kids) async {
     if (kids.length == 1) {
-      await _selectStudent(kids.first, silent: kids.length == 1 && _children.length == 1);
+      final only = kids.first;
+      final silent = _children.length == 1;
+      await _selectStudent(only, silent: silent, confirmLabel: !silent);
       return;
     }
-    final names = kids
-        .map((c) => (c["fullName"]?.toString() ?? "").trim())
-        .where((n) => n.isNotEmpty)
-        .toList();
+    final labels = _nameLabels(kids);
     setState(() {
       _step = _BotStep.askName;
-      _suggestions = names;
+      _suggestions = labels;
     });
-    _pushBot(_l10n.parentBotAskName, suggestions: names);
+    _pushBot(_l10n.parentBotAskName, suggestions: labels);
+  }
+
+  Future<void> _askTopic() async {
+    final topics = _topicSuggestions;
+    setState(() {
+      _step = _BotStep.askTopic;
+      _suggestions = topics;
+      _studentByLabel.clear();
+    });
+    _pushBot(_l10n.parentBotAskTopic, suggestions: topics);
+  }
+
+  Future<void> _continueAfterStudent() async {
+    if (_topic != null) {
+      await _fetchThenAskDetail();
+      return;
+    }
+    await _askTopic();
   }
 
   Future<void> _selectStudent(
     Map<String, dynamic> child, {
     bool silent = false,
+    bool confirmLabel = false,
   }) async {
-    final name = (child["fullName"]?.toString() ?? "").trim();
-    if (!silent && name.isNotEmpty) _pushUser(name);
+    final label = _childLabel(child);
+    if (!silent) {
+      _pushUser(_fullName(child).isNotEmpty ? _fullName(child) : label);
+    } else if (confirmLabel && label.isNotEmpty) {
+      _pushBot("${_l10n.parentBotPickedStudent} : $label");
+    }
     setState(() {
       _student = child;
+      final cls = _classOf(child);
+      if (cls.isNotEmpty) _className = cls;
       _suggestions = [];
-      _step = _BotStep.loading;
+      _studentByLabel.clear();
     });
-    _pushBot(_l10n.parentBotLoading);
-    await _loadResult();
+    await _continueAfterStudent();
   }
 
-  Future<void> _loadResult() async {
+  /// Propose les vrais noms quand le parent tape un prénom (partiel).
+  Future<void> _handleNameQuery(
+    String typed, {
+    required List<Map<String, dynamic>> pool,
+    bool alreadyEchoed = false,
+  }) async {
+    if (!alreadyEchoed) _pushUser(typed);
+    final matches = _findStudents(typed, pool: pool);
+    if (matches.isEmpty) {
+      final labels = _nameLabels(pool);
+      _pushBot(_l10n.parentBotUnknownName, suggestions: labels);
+      setState(() {
+        _step = _BotStep.askName;
+        _suggestions = labels;
+      });
+      return;
+    }
+    if (matches.length == 1) {
+      final only = matches.first;
+      final real = _childLabel(only, pool: pool);
+      _pushBot("${_l10n.parentBotPickedStudent} : $real");
+      await _selectStudent(only, silent: true);
+      return;
+    }
+    final labels = _nameLabels(matches);
+    setState(() {
+      _step = _BotStep.askName;
+      _suggestions = labels;
+    });
+    _pushBot(_l10n.parentBotNameMatches, suggestions: labels);
+  }
+
+  /// Charge les données puis propose type de frais / période si besoin.
+  Future<void> _fetchThenAskDetail() async {
     final topic = _topic;
     final studentId = _student?["studentId"]?.toString();
     if (topic == null || studentId == null || studentId.isEmpty) {
       setState(_resetFlow);
       return;
     }
+    setState(() {
+      _suggestions = [];
+      _step = _BotStep.loading;
+      _rawData = null;
+      _detailByLabel.clear();
+    });
+    _pushBot(_l10n.parentBotLoading);
     try {
       final repo = ref.read(parentRepositoryProvider);
       final data = switch (topic) {
@@ -270,44 +569,122 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
           ),
       };
       if (!mounted) return;
-      final name = _student?["fullName"]?.toString() ?? "—";
-      final classLabel = (_className ?? _student?["className"]?.toString() ?? "")
-          .trim();
-      final header = classLabel.isEmpty
-          ? "${_l10n.parentBotResultFor} $name"
-          : "${_l10n.parentBotResultFor} $name ($classLabel)";
-      final resultStudentId = studentId;
       setState(() {
-        // Retire le « Chargement… » précédent.
-        if (_messages.isNotEmpty &&
-            _messages.last.kind == _MsgKind.text &&
-            !_messages.last.mine &&
-            _messages.last.text == _l10n.parentBotLoading) {
-          _messages.removeLast();
-        }
-        _messages.add(
-          _ChatMsg.result(
-            text: header,
-            panel: topic,
-            panelData: data,
-            studentId: resultStudentId,
-          ),
-        );
-        _resetFlow();
+        _removeTrailingLoading();
+        _rawData = data;
       });
-      _scrollToEnd();
+
+      final options = _detailOptions(topic, data);
+      // Plusieurs choix → le parent précise ce qui s'affiche.
+      if (options.length > 1) {
+        final labels = _buildDetailSuggestions(topic, options);
+        setState(() {
+          _step = _BotStep.askDetail;
+          _suggestions = labels;
+        });
+        _pushBot(
+          topic == "fees"
+              ? _l10n.parentBotAskFeeType
+              : _l10n.parentBotAskPeriod,
+          suggestions: labels,
+        );
+        return;
+      }
+      // 0 ou 1 option : affichage direct (déjà précis).
+      await _presentResult(
+        choice: options.isEmpty ? null : options.first,
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        if (_messages.isNotEmpty &&
-            _messages.last.text == _l10n.parentBotLoading) {
-          _messages.removeLast();
-        }
+        _removeTrailingLoading();
         _messages.add(_ChatMsg.error(e.toString()));
         _resetFlow();
       });
       _scrollToEnd();
     }
+  }
+
+  Future<void> _selectDetail(String label, {bool silent = false}) async {
+    final choice = _detailByLabel[label.trim()];
+    if (choice == null) {
+      final fallback = _suggestions;
+      _pushBot(_l10n.parentBotUnknownDetail, suggestions: fallback);
+      setState(() {
+        _step = _BotStep.askDetail;
+        _suggestions = fallback;
+      });
+      return;
+    }
+    if (!silent) _pushUser(label);
+    await _presentResult(choice: choice);
+  }
+
+  Future<void> _presentResult({
+    required Map<String, dynamic>? choice,
+  }) async {
+    final topic = _topic;
+    final raw = _rawData;
+    final studentId = _student?["studentId"]?.toString();
+    if (topic == null || raw == null || studentId == null) {
+      setState(_resetFlow);
+      return;
+    }
+
+    var panelData = _filterPanelData(
+      topic: topic,
+      raw: raw,
+      choice: choice,
+    );
+
+    // Bulletin : recharger la méta de la période choisie si periodId dispo.
+    if (topic == "bulletin" &&
+        choice != null &&
+        choice[_allDetailId] != true) {
+      final periodId = choice["periodId"];
+      final id = periodId is int
+          ? periodId
+          : int.tryParse(periodId?.toString() ?? "");
+      if (id != null) {
+        try {
+          panelData = await ref.read(parentRepositoryProvider).bulletinMeta(
+                organizationId: widget.organizationId,
+                studentId: studentId,
+                periodId: id,
+              );
+        } catch (_) {
+          // Garde le filtre local si le rechargement échoue.
+        }
+      }
+    }
+
+    if (!mounted) return;
+    final name = _fullName(_student!);
+    final classLabel = (_className ?? _classOf(_student!)).trim();
+    var header = classLabel.isEmpty
+        ? "${_l10n.parentBotResultFor} $name"
+        : "${_l10n.parentBotResultFor} $name ($classLabel)";
+    if (choice != null && choice[_allDetailId] != true) {
+      final detail = topic == "fees"
+          ? _feeItemLabel(choice)
+          : _periodItemLabel(choice);
+      if (detail.isNotEmpty && detail != "—") {
+        header = "$header — $detail";
+      }
+    }
+
+    setState(() {
+      _messages.add(
+        _ChatMsg.result(
+          text: header,
+          panel: topic,
+          panelData: panelData,
+          studentId: studentId,
+        ),
+      );
+      _resetFlow();
+    });
+    _scrollToEnd();
   }
 
   String? _matchTopic(String raw) {
@@ -336,23 +713,49 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
     return null;
   }
 
-  Map<String, dynamic>? _matchStudent(
-    String raw,
-    List<Map<String, dynamic>> pool,
-  ) {
+  /// Prénom / nom partiel → tous les élèves correspondants (pas seulement 1).
+  List<Map<String, dynamic>> _findStudents(
+    String raw, {
+    required List<Map<String, dynamic>> pool,
+  }) {
     final q = raw.trim().toLowerCase();
-    if (q.isEmpty) return null;
-    final exact = pool.where((c) {
-      final n = (c["fullName"]?.toString() ?? "").trim().toLowerCase();
-      return n == q;
-    }).toList();
-    if (exact.length == 1) return exact.first;
-    final partial = pool.where((c) {
-      final n = (c["fullName"]?.toString() ?? "").trim().toLowerCase();
-      return n.contains(q) || q.contains(n);
-    }).toList();
-    if (partial.length == 1) return partial.first;
-    return null;
+    if (q.isEmpty) return const [];
+
+    // Si le chip contient « · classe », matcher sur le nom seul.
+    final beforeDot = q.split("·").first.trim();
+    final query = beforeDot.isNotEmpty ? beforeDot : q;
+
+    int score(Map<String, dynamic> c) {
+      final full = _fullName(c).toLowerCase();
+      if (full.isEmpty) return 0;
+      if (full == query) return 100;
+      final tokens = full.split(RegExp(r"\s+")).where((t) => t.isNotEmpty);
+      for (final t in tokens) {
+        if (t == query) return 90; // prénom exact
+        if (t.startsWith(query)) return 80;
+      }
+      if (full.startsWith(query)) return 70;
+      if (full.contains(query)) return 50;
+      if (query.contains(full) && full.length >= 3) return 40;
+      return 0;
+    }
+
+    final ranked = <(int, Map<String, dynamic>)>[];
+    final seen = <String>{};
+    for (final c in pool) {
+      final s = score(c);
+      if (s <= 0) continue;
+      final id = c["studentId"]?.toString() ?? _fullName(c);
+      if (!seen.add(id)) continue;
+      ranked.add((s, c));
+    }
+    ranked.sort((a, b) => b.$1.compareTo(a.$1));
+    return ranked.map((e) => e.$2).toList();
+  }
+
+  Map<String, dynamic>? _matchStudentExactLabel(String raw) {
+    final key = raw.trim();
+    return _studentByLabel[key];
   }
 
   String? _matchClass(String raw) {
@@ -377,12 +780,39 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
         final topic = _matchTopic(text);
         if (topic != null) {
           await _startTopic(topic);
-        } else {
-          _pushUser(text);
-          _pushBot(_l10n.parentBotWelcome);
+          return;
         }
+        final nameHits = _findStudents(text, pool: _children);
+        if (nameHits.isNotEmpty) {
+          await _handleNameQuery(text, pool: _children);
+          return;
+        }
+        final classHit = _matchClass(text);
+        if (classHit != null) {
+          _pushUser(text);
+          setState(() {
+            _topic = null;
+            _student = null;
+          });
+          await _selectClass(classHit, silent: true);
+          // Après classe sans sujet : demander l'élève puis le sujet.
+          return;
+        }
+        _pushUser(text);
+        _pushBot(_l10n.parentBotWelcome);
       case _BotStep.askClass:
         _pushUser(text);
+        final topic = _matchTopic(text);
+        if (topic != null) {
+          setState(() => _topic = topic);
+          // Reposer la question classe.
+          _pushBot(_l10n.parentBotAskClass, suggestions: _classes);
+          setState(() {
+            _step = _BotStep.askClass;
+            _suggestions = _classes;
+          });
+          return;
+        }
         final matched = _matchClass(text);
         if (matched == null) {
           _pushBot(_l10n.parentBotUnknownClass, suggestions: _classes);
@@ -391,35 +821,103 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
         }
         await _selectClass(matched, silent: true);
       case _BotStep.askName:
-        _pushUser(text);
+        final fromChip = _matchStudentExactLabel(text);
+        if (fromChip != null) {
+          _pushUser(text);
+          await _selectStudent(fromChip, silent: true);
+          return;
+        }
+        final topic = _matchTopic(text);
+        if (topic != null) {
+          _pushUser(text);
+          setState(() => _topic = topic);
+          final pool = _className != null
+              ? _childrenInClass(_className!)
+              : _children;
+          final labels = _nameLabels(pool);
+          _pushBot(_l10n.parentBotAskName, suggestions: labels);
+          setState(() {
+            _step = _BotStep.askName;
+            _suggestions = labels;
+          });
+          return;
+        }
         final pool = _className != null
             ? _childrenInClass(_className!)
             : _children;
-        final matched = _matchStudent(text, pool);
-        if (matched == null) {
-          final names = pool
-              .map((c) => (c["fullName"]?.toString() ?? "").trim())
-              .where((n) => n.isNotEmpty)
-              .toList();
-          _pushBot(_l10n.parentBotUnknownName, suggestions: names);
-          setState(() => _suggestions = names);
+        await _handleNameQuery(text, pool: pool);
+      case _BotStep.askTopic:
+        final topic = _matchTopic(text);
+        if (topic == null) {
+          _pushUser(text);
+          _pushBot(_l10n.parentBotAskTopic, suggestions: _topicSuggestions);
+          setState(() => _suggestions = _topicSuggestions);
           return;
         }
-        await _selectStudent(matched, silent: true);
+        await _startTopic(topic);
+      case _BotStep.askDetail:
+        final key = _matchDetailLabel(text);
+        if (key == null) {
+          _pushUser(text);
+          _pushBot(
+            _l10n.parentBotUnknownDetail,
+            suggestions: _suggestions,
+          );
+          setState(() => _step = _BotStep.askDetail);
+          return;
+        }
+        await _selectDetail(key);
       case _BotStep.loading:
         break;
     }
   }
 
+  String? _matchDetailLabel(String raw) {
+    final t = raw.trim();
+    if (t.isEmpty) return null;
+    if (_detailByLabel.containsKey(t)) return t;
+    final lower = t.toLowerCase();
+    for (final k in _detailByLabel.keys) {
+      if (k.toLowerCase() == lower) return k;
+    }
+    final partial = _detailByLabel.keys
+        .where(
+          (k) =>
+              k.toLowerCase().contains(lower) ||
+              lower.contains(k.toLowerCase()),
+        )
+        .toList();
+    if (partial.length == 1) return partial.first;
+    return null;
+  }
+
   Future<void> _onSuggestionTap(String value) async {
-    if (_step == _BotStep.askClass) {
-      await _selectClass(value);
-    } else if (_step == _BotStep.askName) {
-      final pool = _className != null
-          ? _childrenInClass(_className!)
-          : _children;
-      final matched = _matchStudent(value, pool);
-      if (matched != null) await _selectStudent(matched);
+    switch (_step) {
+      case _BotStep.askClass:
+        await _selectClass(value);
+      case _BotStep.askName:
+        final fromChip = _matchStudentExactLabel(value);
+        if (fromChip != null) {
+          await _selectStudent(fromChip);
+          return;
+        }
+        final pool = _className != null
+            ? _childrenInClass(_className!)
+            : _children;
+        final hits = _findStudents(value, pool: pool);
+        if (hits.length == 1) {
+          await _selectStudent(hits.first);
+        } else if (hits.isNotEmpty) {
+          await _handleNameQuery(value, pool: pool);
+        }
+      case _BotStep.askTopic:
+        final topic = _matchTopic(value);
+        if (topic != null) await _startTopic(topic);
+      case _BotStep.askDetail:
+        await _selectDetail(value);
+      case _BotStep.idle:
+      case _BotStep.loading:
+        break;
     }
   }
 
@@ -451,70 +949,83 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
         ? EteyeloColors.chatBackgroundDark
         : EteyeloColors.chatBackground;
 
-    return Scaffold(
-      backgroundColor: bg,
-      appBar: AppBar(
-        title: Text(l10n.parentHubTitle),
-      ),
-      body: _booting
-          ? const Center(child: CircularProgressIndicator())
-          : _bootError != null && _children.isEmpty
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Text(_bootError!, textAlign: TextAlign.center),
-                  ),
-                )
-              : _children.isEmpty
-                  ? Center(child: Text(l10n.parentNoChildren))
-                  : Column(
-                      children: [
-                        Expanded(
-                          child: ListView.builder(
-                            controller: _scroll,
-                            padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-                            itemCount: _messages.length,
-                            itemBuilder: (context, i) {
-                              final msg = _messages[i];
-                              return _Bubble(
-                                msg: msg,
-                                l10n: l10n,
-                                isDark: isDark,
-                                onPayFee: (fraisId) {
-                                  final sid = msg.studentId;
-                                  if (sid == null) return;
-                                  unawaited(_payFee(sid, fraisId));
-                                },
-                              );
-                            },
+    return PopScope(
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) _wipeChat();
+      },
+      child: Scaffold(
+        backgroundColor: bg,
+        appBar: AppBar(
+          title: Text(l10n.parentHubTitle),
+        ),
+        body: _booting
+            ? const Center(child: CircularProgressIndicator())
+            : _bootError != null && _children.isEmpty
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(_bootError!, textAlign: TextAlign.center),
+                    ),
+                  )
+                : _children.isEmpty
+                    ? Center(child: Text(l10n.parentNoChildren))
+                    : Column(
+                        children: [
+                          Expanded(
+                            child: ListView.builder(
+                              controller: _scroll,
+                              padding:
+                                  const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                              itemCount: _messages.length,
+                              itemBuilder: (context, i) {
+                                final msg = _messages[i];
+                                return _Bubble(
+                                  msg: msg,
+                                  l10n: l10n,
+                                  isDark: isDark,
+                                  onPayFee: (fraisId) {
+                                    final sid = msg.studentId;
+                                    if (sid == null) return;
+                                    unawaited(_payFee(sid, fraisId));
+                                  },
+                                );
+                              },
+                            ),
                           ),
-                        ),
-                        if (_suggestions.isNotEmpty &&
-                            (_step == _BotStep.askClass ||
-                                _step == _BotStep.askName))
-                          _SuggestionStrip(
-                            items: _suggestions,
-                            onTap: (v) => unawaited(_onSuggestionTap(v)),
+                          if (_suggestions.isNotEmpty &&
+                              (_step == _BotStep.askClass ||
+                                  _step == _BotStep.askName ||
+                                  _step == _BotStep.askTopic ||
+                                  _step == _BotStep.askDetail))
+                            _SuggestionStrip(
+                              items: _suggestions,
+                              onTap: (v) => unawaited(_onSuggestionTap(v)),
+                              isDark: isDark,
+                            ),
+                          _TopicList(
+                            l10n: l10n,
+                            enabled: _step != _BotStep.loading,
+                            onTap: (topic) => unawaited(_startTopic(topic)),
                             isDark: isDark,
                           ),
-                        _TopicList(
-                          l10n: l10n,
-                          enabled: _step != _BotStep.loading,
-                          onTap: (topic) => unawaited(_startTopic(topic)),
-                          isDark: isDark,
-                        ),
-                        _ComposerBar(
-                          controller: _input,
-                          focusNode: _focus,
-                          hint: _step == _BotStep.idle
-                              ? l10n.parentBotHintIdle
-                              : l10n.parentBotHint,
-                          enabled: _step != _BotStep.loading,
-                          onSend: () => unawaited(_onSubmit()),
-                          isDark: isDark,
-                        ),
-                      ],
-                    ),
+                          _ComposerBar(
+                            controller: _input,
+                            focusNode: _focus,
+                            hint: switch (_step) {
+                              _BotStep.askTopic => l10n.parentBotAskTopic,
+                              _BotStep.askDetail => _topic == "fees"
+                                  ? l10n.parentBotAskFeeType
+                                  : l10n.parentBotAskPeriod,
+                              _BotStep.idle => l10n.parentBotHintIdle,
+                              _ => l10n.parentBotHint,
+                            },
+                            enabled: _step != _BotStep.loading,
+                            onSend: () => unawaited(_onSubmit()),
+                            isDark: isDark,
+                          ),
+                        ],
+                      ),
+      ),
     );
   }
 }
