@@ -402,30 +402,54 @@ class CallHub {
     Map<String, dynamic> event,
   ) async {
     final payload = event["payload"];
-    final message = payload is Map
-        ? Map<String, dynamic>.from(payload)
-        : const <String, dynamic>{};
-    final senderId = _firstId([
-      event["senderId"],
-      message["senderId"],
-      message["authorId"],
+    final message = event["message"];
+    final nestedMessage = payload is Map ? payload["message"] : null;
+    final eventData = event["data"];
+    final payloadData = payload is Map ? payload["data"] : null;
+    final sources = <Map>[];
+    for (final source in [
+      event,
+      payload,
+      message,
+      nestedMessage,
+      eventData,
+      payloadData,
+    ]) {
+      if (source is Map) sources.add(source);
+    }
+    String? valueFor(List<String> keys) {
+      for (final source in sources) {
+        for (final key in keys) {
+          final value = source[key]?.toString().trim();
+          if (value != null && value.isNotEmpty && value != "null") {
+            return value;
+          }
+        }
+      }
+      return null;
+    }
+
+    final senderId = valueFor([
+      "senderId",
+      "sender_id",
+      "senderUserId",
+      "fromUserId",
+      "authorId",
+      "author_id",
     ]);
     if (senderId == null || senderId == localUserId) return;
-    final messageId = _firstId([
-      event["messageId"],
-      event["id"],
-      message["messageId"],
-      message["id"],
+    final messageId = valueFor(["messageId", "message_id", "id"]);
+    final conversationId = valueFor([
+      "conversationId",
+      "conversation_id",
+      "threadId",
     ]);
-    final conversationId = _firstId([
-      event["conversationId"],
-      message["conversationId"],
-    ]);
-    final organizationId = _firstId([
-          event["organizationId"],
-          message["organizationId"],
-          presence.organizationId,
+    final organizationId = valueFor([
+          "organizationId",
+          "organization_id",
+          "orgId",
         ]) ??
+        presence.organizationId ??
         "";
     if (messageId == null ||
         conversationId == null ||

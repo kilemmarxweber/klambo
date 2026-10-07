@@ -407,6 +407,7 @@ class AlertConnectionService : Service() {
     private fun soundsOn() = prefs().getBoolean("flutter.klambo_alert_sounds", true)
 
     private fun showMessage(event: JSONObject, me: String?) {
+        acknowledgeMessageDelivery(event, me)
         if (!prefs().getBoolean("flutter.klambo_alert_message_notif", true)) return
         val sender = event.optString("senderId").ifBlank {
             event.optJSONObject("payload")?.optString("senderId").orEmpty()
@@ -438,6 +439,116 @@ class AlertConnectionService : Service() {
             call = false,
             avatar = avatarBitmap(image),
         )
+    }
+
+    /** Accuse la rÃ©ception mÃªme quand Flutter est en arriÃ¨re-plan/verrouillÃ©. */
+    private fun acknowledgeMessageDelivery(event: JSONObject, me: String?) {
+        val payload = event.optJSONObject("payload")
+        val data = event.optJSONObject("data") ?: payload?.optJSONObject("data")
+        val message = event.optJSONObject("message")
+            ?: payload?.optJSONObject("message")
+            ?: data?.optJSONObject("message")
+        val senderId = firstValue(
+            event.optString("senderId"),
+            event.optString("sender_id"),
+            event.optString("fromUserId"),
+            payload?.optString("senderId"),
+            payload?.optString("sender_id"),
+            payload?.optString("fromUserId"),
+            data?.optString("senderId"),
+            data?.optString("sender_id"),
+            data?.optString("fromUserId"),
+            message?.optString("senderId"),
+            message?.optString("sender_id"),
+            message?.optString("authorId"),
+        )
+        if (senderId == null || senderId == me) return
+
+        val messageId = firstValue(
+            event.optString("messageId"),
+            event.optString("message_id"),
+            event.optString("id"),
+            payload?.optString("messageId"),
+            payload?.optString("message_id"),
+            payload?.optString("id"),
+            data?.optString("messageId"),
+            data?.optString("message_id"),
+            data?.optString("id"),
+            message?.optString("messageId"),
+            message?.optString("message_id"),
+            message?.optString("id"),
+        ) ?: return
+        val conversationId = firstValue(
+            event.optString("conversationId"),
+            event.optString("conversation_id"),
+            event.optString("threadId"),
+            payload?.optString("conversationId"),
+            payload?.optString("conversation_id"),
+            payload?.optString("threadId"),
+            data?.optString("conversationId"),
+            data?.optString("conversation_id"),
+            data?.optString("threadId"),
+            message?.optString("conversationId"),
+            message?.optString("conversation_id"),
+        ) ?: return
+        val organizationId = firstValue(
+            event.optString("organizationId"),
+            event.optString("organization_id"),
+            payload?.optString("organizationId"),
+            payload?.optString("organization_id"),
+            data?.optString("organizationId"),
+            data?.optString("organization_id"),
+            message?.optString("organizationId"),
+            message?.optString("organization_id"),
+            activeOrganizationId(),
+        ) ?: return
+        val token = prefs().getString("flutter.klambo_auth_token", null)
+            ?.takeIf { it.isNotBlank() } ?: return
+        val url = "${apiBase()}/api/mobile/v1/organizations/$organizationId" +
+            "/conversations/$conversationId/actions"
+        val body = JSONObject()
+            .put("action", "delivered")
+            .put("messageIds", org.json.JSONArray().put(messageId))
+            .toString()
+            .toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer $token")
+            .post(body)
+            .build()
+        client.newCall(request).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, error: java.io.IOException) {
+                android.util.Log.w("klambo", "delivery acknowledgement failed", error)
+            }
+
+            override fun onResponse(call: okhttp3.Call, response: Response) {
+                if (!response.isSuccessful) {
+                    android.util.Log.w(
+                        "klambo",
+                        "delivery acknowledgement returned ${response.code}",
+                    )
+                }
+                response.close()
+            }
+        })
+    }
+
+    private fun activeOrganizationId(): String? {
+        val raw = prefs().getString("flutter.klambo_me_snapshot", null) ?: return null
+        return try {
+            JSONObject(raw).optString("activeOrganizationId")
+                .takeIf { it.isNotBlank() && it != "null" }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun firstValue(vararg values: String?): String? {
+        for (value in values) {
+            val normalized = value?.trim()
+            if (!normalized.isNullOrEmpty() && normalized != "null") return normalized
+        }
+        return null
     }
 
     private fun showCall(event: JSONObject) {
