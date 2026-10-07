@@ -851,6 +851,7 @@ class CallController extends ChangeNotifier {
   }) async {
     if (_disposed) return;
     error = null;
+    speakerOn = true;
     phase = CallPhase.ringingOut;
     _safeNotify();
 
@@ -1029,6 +1030,7 @@ class CallController extends ChangeNotifier {
       conversationId: p["conversationId"]?.toString() ??
           event["conversationId"]?.toString(),
     );
+    speakerOn = true;
     phase = CallPhase.ringingIn;
     _incomingSdp = sdp;
     _incomingDtls = p["dtls"];

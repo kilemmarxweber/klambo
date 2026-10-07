@@ -152,25 +152,22 @@ class MainActivity : FlutterActivity() {
     private fun setCallHoldsScreen(hold: Boolean) {
         if (Build.VERSION.SDK_INT >= 27) {
             setShowWhenLocked(hold)
-            setTurnScreenOn(hold)
+            setTurnScreenOn(false)
         } else if (hold) {
             @Suppress("DEPRECATION")
             window.addFlags(
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED,
             )
         } else {
             @Suppress("DEPRECATION")
             window.clearFlags(
-                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON,
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED,
             )
         }
-        if (hold) {
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        } else {
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        }
+        window.clearFlags(
+            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+        )
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

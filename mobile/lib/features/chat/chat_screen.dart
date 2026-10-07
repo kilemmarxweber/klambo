@@ -449,19 +449,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (type == "conversation.updated") {
       if (convId != null && convId != widget.conversationId) return;
       final update = payload is Map ? payload : event;
-      final reason = (event["reason"] ?? update["reason"])?.toString();
+      final reason = (event["reason"] ?? update["reason"])
+          ?.toString()
+          .trim()
+          .toLowerCase();
       final readAtRaw =
           (event["lastReadAt"] ?? update["lastReadAt"])?.toString();
       final readerId = (event["userId"] ?? update["userId"])?.toString();
       final me = ref.read(sessionProvider).me?["user"];
       final myId = me is Map ? me["id"]?.toString() : null;
-      final messageId = (event["messageId"] ?? update["messageId"] ??
-              update["id"])
-          ?.toString();
-      if ((reason == "delivered" || reason == "received") &&
-          messageId != null &&
-          messageId.isNotEmpty) {
-        _setMessageDeliveryStatus(messageId, "DELIVERED");
+      final messageIds = _eventMessageIds(event, update);
+      final eventStatus = _eventDeliveryStatus(event, update);
+      if (reason == "delivered" || reason == "received") {
+        for (final messageId in messageIds) {
+          _setMessageDeliveryStatus(messageId, "DELIVERED");
+        }
       }
       if (reason == "read" &&
           readAtRaw != null &&
@@ -477,6 +479,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           });
         }
       }
+      if (eventStatus != null) {
+        for (final messageId in messageIds) {
+          _setMessageDeliveryStatus(messageId, eventStatus);
+        }
+      }
       return;
     }
 
@@ -484,17 +491,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         type == "message.received" ||
         type == "message.read") {
       if (convId != null && convId != widget.conversationId) return;
-      final payloadIds = payload is Map ? payload["messageIds"] : null;
-      final rawIds = event["messageIds"] ?? payloadIds;
-      final messageIds = <String>{
-        if (rawIds is List) ...rawIds.map((id) => id.toString()),
-        if (event["messageId"] != null) event["messageId"].toString(),
-        if (event["id"] != null) event["id"].toString(),
-        if (payload is Map && payload["messageId"] != null)
-          payload["messageId"].toString(),
-        if (payload is Map && payload["id"] != null)
-          payload["id"].toString(),
-      };
+      final messageIds = _eventMessageIds(event, payload);
       for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
         _setMessageDeliveryStatus(
           messageId,
@@ -510,16 +507,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (convId != null && convId != widget.conversationId) return;
       if (type == "message.updated") {
         final update = payload is Map ? payload : event;
-        final messageId = update["messageId"]?.toString() ??
-            update["id"]?.toString();
-        final status = (update["deliveryStatus"] ?? update["status"])
-            ?.toString()
-            .toUpperCase();
-        if (messageId != null &&
-            (status == "DELIVERED" ||
-                status == "RECEIVED" ||
-                status == "READ")) {
-          _setMessageDeliveryStatus(messageId, status!);
+        final messageIds = _eventMessageIds(update);
+        final status = _eventDeliveryStatus(update);
+        if (status != null) {
+          for (final messageId in messageIds) {
+            _setMessageDeliveryStatus(messageId, status);
+          }
         }
       }
       if (type == "message.created") {
@@ -547,19 +540,50 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   void _setMessageDeliveryStatus(String messageId, String status) {
     if (!mounted) return;
+    final normalizedStatus = status.trim().toUpperCase();
     final index = _messages.indexWhere(
       (raw) => raw is Map && raw["id"]?.toString() == messageId,
     );
     if (index < 0) return;
     final raw = _messages[index];
     if (raw is! Map) return;
-    final current = raw["deliveryStatus"]?.toString().toUpperCase();
-    if (current == "READ" || current == status) return;
+    final current = raw["deliveryStatus"]?.toString().trim().toUpperCase();
+    if (current == "READ" || current == normalizedStatus) return;
     setState(() {
       final updated = Map<String, dynamic>.from(raw);
-      updated["deliveryStatus"] = status;
+      updated["deliveryStatus"] = normalizedStatus;
       _messages[index] = updated;
     });
+  }
+
+  Set<String> _eventMessageIds(Object? primary, [Object? secondary]) {
+    final ids = <String>{};
+    for (final source in [primary, secondary]) {
+      if (source is! Map) continue;
+      final many = source["messageIds"] ?? source["message_ids"];
+      if (many is List) ids.addAll(many.map((id) => id.toString()));
+      for (final key in ["messageId", "message_id", "id"]) {
+        final value = source[key]?.toString();
+        if (value != null && value.isNotEmpty) ids.add(value);
+      }
+    }
+    ids.remove("");
+    return ids;
+  }
+
+  String? _eventDeliveryStatus(Object? primary, [Object? secondary]) {
+    for (final source in [primary, secondary]) {
+      if (source is! Map) continue;
+      final raw = (source["deliveryStatus"] ??
+              source["delivery_status"] ??
+              source["status"])
+          ?.toString()
+          .trim()
+          .toUpperCase();
+      if (raw == "READ" || raw == "SEEN") return "READ";
+      if (raw == "DELIVERED" || raw == "RECEIVED") return "DELIVERED";
+    }
+    return null;
   }
 
   /// Insert / confirme un message depuis `message.created` sans attendre HTTP.
@@ -733,8 +757,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         continue;
       }
       // Cache ou réponse incomplète : ne pas perdre un message déjà à l'écran.
-      if (!byId.containsKey(id)) {
+      final incomingMessage = byId[id];
+      if (incomingMessage == null) {
         byId[id] = m;
+      } else {
+        // HTTP may be stale after a delivery/read acknowledgement arrived over WS.
+        final oldStatus = _deliveryStatusRank(m["deliveryStatus"]);
+        final newStatus = _deliveryStatusRank(
+          incomingMessage["deliveryStatus"] ??
+              incomingMessage["delivery_status"] ??
+              incomingMessage["status"],
+        );
+        if (oldStatus > newStatus) {
+          final merged = Map<String, dynamic>.from(incomingMessage);
+          merged["deliveryStatus"] = oldStatus >= 3 ? "READ" : "DELIVERED";
+          byId[id] = merged;
+        }
       }
     }
     final list = byId.values.toList();
@@ -746,6 +784,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return ta.compareTo(tb);
     });
     return list;
+  }
+
+  int _deliveryStatusRank(Object? value) {
+    switch (value?.toString().trim().toUpperCase()) {
+      case "READ":
+      case "SEEN":
+        return 3;
+      case "DELIVERED":
+      case "RECEIVED":
+      case "UNREAD":
+      case "NOT_READ":
+        return 2;
+      case "SENT":
+        return 1;
+      default:
+        return 0;
+    }
   }
 
   @override
@@ -2006,6 +2061,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       );
       return;
     }
+    _composerKey.currentState?.unfocus();
     setState(() => _calling = true);
     try {
       final me = ref.read(sessionProvider).me?["user"];

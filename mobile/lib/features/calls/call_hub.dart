@@ -200,6 +200,8 @@ class CallHub {
   List<ConnectivityResult>? _lastNetwork;
   int _networkRevision = 0;
   bool _hubDisposed = false;
+  bool? _lockscreenCallVisible;
+  String? _ongoingCallKey;
   late final MessagingSocket socket;
   late final CallController controller;
   late final PresenceController presence;
@@ -609,20 +611,29 @@ class CallHub {
   void _onCallPhaseChanged() {
     _scheduleCallFallback();
     final phase = controller.phase;
-    final callLive =
+    final mediaCall =
         phase == CallPhase.connecting || phase == CallPhase.active;
-    unawaited(setLockScreenVisible(callLive));
-    if (callLive) {
+    final callInProgress = phase == CallPhase.ringingIn ||
+        phase == CallPhase.ringingOut ||
+        mediaCall;
+    if (_lockscreenCallVisible != mediaCall) {
+      _lockscreenCallVisible = mediaCall;
+      unawaited(setLockScreenVisible(mediaCall));
+    }
+    if (callInProgress) {
       final peer = controller.active?.peerName?.trim();
       final name = (peer != null && peer.isNotEmpty) ? peer : "Klambo";
-      unawaited(
-        BackgroundAlerts.setCallOngoing(
-          name: name,
-          video: controller.active?.kind == "VIDEO",
-        ),
-      );
+      final video = controller.active?.kind == "VIDEO";
+      final callKey = "$name|$video";
+      if (_ongoingCallKey != callKey) {
+        _ongoingCallKey = callKey;
+        unawaited(BackgroundAlerts.setCallOngoing(name: name, video: video));
+      }
     } else if (phase == CallPhase.idle || phase == CallPhase.ended) {
-      unawaited(BackgroundAlerts.setCallIdle());
+      if (_ongoingCallKey != null) {
+        _ongoingCallKey = null;
+        unawaited(BackgroundAlerts.setCallIdle());
+      }
       final callId = controller.active?.callId;
       if (!kIsWeb &&
           defaultTargetPlatform == TargetPlatform.iOS &&
@@ -710,7 +721,7 @@ class CallHub {
       }
       if (!online) {
         controller.setStatusHint(
-          "Contact hors ligne — il doit avoir Klambo ouvert pour décrocher",
+          "Contact hors ligne...",
         );
       }
       showCallScreen();
@@ -735,6 +746,7 @@ class CallHub {
   /// Rouvre l'écran d'appel sans en créer un second.
   void showCallScreen() {
     if (controller.isDisposed || !controller.isBusy) return;
+    FocusManager.instance.primaryFocus?.unfocus();
     controller.setMinimized(false);
     final nav = navigatorKey.currentState;
     if (nav == null) return;

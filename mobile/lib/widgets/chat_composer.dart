@@ -101,6 +101,11 @@ class ChatComposerState extends State<ChatComposer> {
 
   bool get hasFocus => _focus.hasFocus;
 
+  /// Ferme le clavier avant d'ouvrir un autre Ã©cran, comme celui d'appel.
+  void unfocus() {
+    _focus.unfocus();
+  }
+
   /// Place le curseur dans le champ de saisie.
   void requestFocus() {
     if (!mounted || !widget.enabled || _recording) return;
