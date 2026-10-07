@@ -112,3 +112,8 @@ bool shouldReplyBusy({required bool inCall, required bool sameCall}) {
 
 /// Le SDP de réponse ne signifie pas que l'audio passe.
 bool markActiveOnAnswer({required bool mediaAlreadyUp}) => mediaAlreadyUp;
+
+/// Le préchauffage WebRTC d'un appel entrant peut produire des événements
+/// ICE avant que l'utilisateur accepte. Ils ne doivent jamais faire sortir
+/// l'interface de l'état de sonnerie ni marquer l'appel comme connecté.
+bool shouldHandleIceSignal({required bool mediaPhase}) => mediaPhase;

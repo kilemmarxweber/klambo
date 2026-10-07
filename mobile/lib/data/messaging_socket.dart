@@ -19,6 +19,7 @@ class MessagingSocket {
   int _reconnectAttempt = 0;
   bool _disposed = false;
   bool _connected = false;
+  DateTime? _lastPongAt;
   String? _subscribedOrgId;
 
   CallEventHandler? onCallEvent;
@@ -49,11 +50,14 @@ class MessagingSocket {
     _reconnectTimer = null;
     _sub?.cancel();
     _pingTimer?.cancel();
+    final wasConnected = _connected;
     try {
       _channel?.sink.close();
     } catch (_) {}
     _channel = null;
     _connected = false;
+    _lastPongAt = null;
+    if (wasConnected) onDisconnected?.call();
 
     final uri = _uri;
     debugPrint("[ws] connecting ${uri.replace(queryParameters: {})}");
@@ -72,6 +76,7 @@ class MessagingSocket {
           final type = map["type"]?.toString() ?? "";
           if (type == "connected") {
             _connected = true;
+            _lastPongAt = DateTime.now();
             _reconnectAttempt = 0;
             onConnected?.call();
             final org = _subscribedOrgId;
@@ -83,7 +88,10 @@ class MessagingSocket {
             }
             return;
           }
-          if (type == "pong") return;
+          if (type == "pong") {
+            _lastPongAt = DateTime.now();
+            return;
+          }
           if (type == "presence" || type == "presence.snapshot") {
             onPresenceEvent?.call(map);
             return;
@@ -94,6 +102,9 @@ class MessagingSocket {
           }
           if (type == "message.created" ||
               type == "message.updated" ||
+              type == "message.delivered" ||
+              type == "message.received" ||
+              type == "message.read" ||
               type == "message.deleted" ||
               type == "conversation.updated" ||
               type == "typing") {
@@ -117,7 +128,16 @@ class MessagingSocket {
     );
 
     _pingTimer = Timer.periodic(const Duration(seconds: 25), (_) {
-      if (_connected) sendJson({"type": "ping"});
+      if (!_connected) return;
+      final lastPong = _lastPongAt;
+      if (lastPong != null &&
+          DateTime.now().difference(lastPong) > const Duration(seconds: 55)) {
+        debugPrint("[ws] pong timeout");
+        _markDisconnected();
+        _scheduleReconnect();
+        return;
+      }
+      sendJson({"type": "ping"});
     });
   }
 
@@ -134,6 +154,7 @@ class MessagingSocket {
   void _markDisconnected() {
     final was = _connected;
     _connected = false;
+    _lastPongAt = null;
     if (was) onDisconnected?.call();
   }
 

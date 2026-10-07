@@ -44,7 +44,7 @@ import "package:uuid/uuid.dart";
 
 const _kMessageDeletedLabel = "Ce message a été retiré";
 
-enum MessageDeliveryStatus { pending, sent, read }
+enum MessageDeliveryStatus { pending, sent, delivered, read }
 
 MessageDeliveryStatus messageDeliveryStatus(
   Map msg,
@@ -55,8 +55,37 @@ MessageDeliveryStatus messageDeliveryStatus(
     return MessageDeliveryStatus.pending;
   }
 
-  final apiStatus = msg["deliveryStatus"]?.toString().toUpperCase();
-  if (apiStatus == "READ") return MessageDeliveryStatus.read;
+  final apiStatus = (msg["deliveryStatus"] ??
+          msg["delivery_status"] ??
+          msg["status"])
+      ?.toString()
+      .trim()
+      .toUpperCase();
+  if (apiStatus == "READ" ||
+      apiStatus == "SEEN" ||
+      msg["readAt"] != null ||
+      msg["read_at"] != null ||
+      msg["isRead"] == true) {
+    return MessageDeliveryStatus.read;
+  }
+  if (apiStatus == "DELIVERED" ||
+      apiStatus == "RECEIVED" ||
+      apiStatus == "UNREAD" ||
+      apiStatus == "NOT_READ" ||
+      msg["deliveredAt"] != null ||
+      msg["delivered_at"] != null ||
+      msg["receivedAt"] != null ||
+      msg["received_at"] != null ||
+      msg["delivered"] == true ||
+      msg["isDelivered"] == true ||
+      msg["received"] == true) {
+    return MessageDeliveryStatus.delivered;
+  }
+  if (apiStatus == "PENDING" ||
+      apiStatus == "SENDING" ||
+      apiStatus == "QUEUED") {
+    return MessageDeliveryStatus.pending;
+  }
   if (apiStatus == "SENT") {
     // L'API peut dire SENT alors qu'on a un watermark local plus récent.
   }
@@ -419,11 +448,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     if (type == "conversation.updated") {
       if (convId != null && convId != widget.conversationId) return;
-      final reason = event["reason"]?.toString();
-      final readAtRaw = event["lastReadAt"]?.toString();
-      final readerId = event["userId"]?.toString();
+      final update = payload is Map ? payload : event;
+      final reason = (event["reason"] ?? update["reason"])?.toString();
+      final readAtRaw =
+          (event["lastReadAt"] ?? update["lastReadAt"])?.toString();
+      final readerId = (event["userId"] ?? update["userId"])?.toString();
       final me = ref.read(sessionProvider).me?["user"];
       final myId = me is Map ? me["id"]?.toString() : null;
+      final messageId = (event["messageId"] ?? update["messageId"] ??
+              update["id"])
+          ?.toString();
+      if ((reason == "delivered" || reason == "received") &&
+          messageId != null &&
+          messageId.isNotEmpty) {
+        _setMessageDeliveryStatus(messageId, "DELIVERED");
+      }
       if (reason == "read" &&
           readAtRaw != null &&
           readerId != null &&
@@ -441,10 +480,48 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       return;
     }
 
+    if (type == "message.delivered" ||
+        type == "message.received" ||
+        type == "message.read") {
+      if (convId != null && convId != widget.conversationId) return;
+      final payloadIds = payload is Map ? payload["messageIds"] : null;
+      final rawIds = event["messageIds"] ?? payloadIds;
+      final messageIds = <String>{
+        if (rawIds is List) ...rawIds.map((id) => id.toString()),
+        if (event["messageId"] != null) event["messageId"].toString(),
+        if (event["id"] != null) event["id"].toString(),
+        if (payload is Map && payload["messageId"] != null)
+          payload["messageId"].toString(),
+        if (payload is Map && payload["id"] != null)
+          payload["id"].toString(),
+      };
+      for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
+        _setMessageDeliveryStatus(
+          messageId,
+          type == "message.read" ? "READ" : "DELIVERED",
+        );
+      }
+      return;
+    }
+
     if (type == "message.created" ||
         type == "message.updated" ||
         type == "message.deleted") {
       if (convId != null && convId != widget.conversationId) return;
+      if (type == "message.updated") {
+        final update = payload is Map ? payload : event;
+        final messageId = update["messageId"]?.toString() ??
+            update["id"]?.toString();
+        final status = (update["deliveryStatus"] ?? update["status"])
+            ?.toString()
+            .toUpperCase();
+        if (messageId != null &&
+            (status == "DELIVERED" ||
+                status == "RECEIVED" ||
+                status == "READ")) {
+          _setMessageDeliveryStatus(messageId, status!);
+        }
+      }
       if (type == "message.created") {
         final senderId = event["senderId"]?.toString() ??
             (payload is Map ? payload["senderId"]?.toString() : null);
@@ -466,6 +543,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         if (mounted) unawaited(_load(silent: true));
       });
     }
+  }
+
+  void _setMessageDeliveryStatus(String messageId, String status) {
+    if (!mounted) return;
+    final index = _messages.indexWhere(
+      (raw) => raw is Map && raw["id"]?.toString() == messageId,
+    );
+    if (index < 0) return;
+    final raw = _messages[index];
+    if (raw is! Map) return;
+    final current = raw["deliveryStatus"]?.toString().toUpperCase();
+    if (current == "READ" || current == status) return;
+    setState(() {
+      final updated = Map<String, dynamic>.from(raw);
+      updated["deliveryStatus"] = status;
+      _messages[index] = updated;
+    });
   }
 
   /// Insert / confirme un message depuis `message.created` sans attendre HTTP.
@@ -554,6 +648,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     String? bodyHint,
     String? senderName,
     Object? senderImage,
+    String? deliveryStatus,
   }) {
     final pendingIdx = _messages.lastIndexWhere((m) {
       if (m is! Map || m["pending"] != true) return false;
@@ -576,6 +671,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final copy = Map<String, dynamic>.from(_messages[pendingIdx] as Map);
       copy["id"] = messageId;
       copy["pending"] = false;
+      if (deliveryStatus != null && deliveryStatus.isNotEmpty) {
+        copy["deliveryStatus"] = deliveryStatus;
+      }
       if (bodyHint != null && bodyHint.isNotEmpty) {
         final cur = copy["body"]?.toString() ?? "";
         if (cur.isEmpty || cur.length <= bodyHint.length) {
@@ -1024,6 +1122,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (!fromCache) _clearTypingFromThread(mapped);
       if (!fromCache) {
         _chimeNewChatMessages(mapped, myId);
+        if (myId != null) {
+          final receivedIds = mapped
+              .where((message) => message["senderId"]?.toString() != myId)
+              .map((message) => message["id"]?.toString() ?? "")
+              .where((id) => id.isNotEmpty)
+              .toSet()
+              .toList();
+          if (receivedIds.isNotEmpty) {
+            unawaited(
+              repo.conversationAction(
+                widget.organizationId,
+                widget.conversationId,
+                "delivered",
+                messageIds: receivedIds,
+              ),
+            );
+          }
+        }
         unawaited(
           repo.conversationAction(
             widget.organizationId,
@@ -1769,6 +1885,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             messageId: mid,
             clientMessageId: clientMessageId,
             bodyHint: text,
+            deliveryStatus: sent["deliveryStatus"]?.toString() ??
+                sent["status"]?.toString(),
           );
           ref.read(callHubProvider)?.publishLocalOutgoing(
                 organizationId: widget.organizationId,
@@ -1818,6 +1936,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               messageId: mid,
               clientMessageId: clientMessageId,
               bodyHint: caption.isNotEmpty ? caption : null,
+              deliveryStatus: sent["deliveryStatus"]?.toString() ??
+                  sent["status"]?.toString(),
             );
             ref.read(callHubProvider)?.publishLocalOutgoing(
                   organizationId: widget.organizationId,
@@ -1847,6 +1967,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               messageId: mid,
               clientMessageId: clientMessageId,
               bodyHint: text,
+              deliveryStatus: sent["deliveryStatus"]?.toString() ??
+                  sent["status"]?.toString(),
             );
             ref.read(callHubProvider)?.publishLocalOutgoing(
                   organizationId: widget.organizationId,
@@ -2527,26 +2649,43 @@ class _DeliveryTicks extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    switch (status) {
-      case MessageDeliveryStatus.pending:
-        return Icon(
-          Icons.access_time_rounded,
-          size: 12,
-          color: EteyeloColors.bubbleMeta.withValues(alpha: 0.85),
-        );
-      case MessageDeliveryStatus.sent:
-        return Icon(
-          Icons.done_rounded,
-          size: 14,
-          color: EteyeloColors.bubbleMeta.withValues(alpha: 0.9),
-        );
-      case MessageDeliveryStatus.read:
-        return Icon(
-          Icons.done_all_rounded,
-          size: 14,
-          color: EteyeloColors.primary.withValues(alpha: 0.9),
-        );
-    }
+    final isPending = status == MessageDeliveryStatus.pending;
+    final isRead = status == MessageDeliveryStatus.read;
+    final isDouble = status == MessageDeliveryStatus.delivered || isRead;
+    final label = switch (status) {
+      MessageDeliveryStatus.pending => "Envoi en cours",
+      MessageDeliveryStatus.sent => "Envoyé au serveur",
+      MessageDeliveryStatus.delivered => "Reçu, pas encore lu",
+      MessageDeliveryStatus.read => "Lu",
+    };
+    return Semantics(
+      label: label,
+      liveRegion: true,
+      child: Tooltip(
+        message: label,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 180),
+          switchInCurve: Curves.easeOut,
+          switchOutCurve: Curves.easeIn,
+          transitionBuilder: (child, animation) => FadeTransition(
+            opacity: animation,
+            child: ScaleTransition(scale: animation, child: child),
+          ),
+          child: Icon(
+            key: ValueKey(status),
+            isPending
+                ? Icons.access_time_rounded
+                : isDouble
+                    ? Icons.done_all_rounded
+                    : Icons.done_rounded,
+            size: isPending ? 12 : 14,
+            color: isRead
+                ? EteyeloColors.primary
+                : EteyeloColors.bubbleMeta.withValues(alpha: 0.9),
+          ),
+        ),
+      ),
+    );
   }
 }
 

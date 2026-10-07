@@ -265,6 +265,7 @@ class MessagingRepository {
     String action, {
     String? userId,
     String? role,
+    List<String>? messageIds,
   }) async {
     try {
       await _api.postJson(
@@ -273,6 +274,8 @@ class MessagingRepository {
           "action": action,
           if (userId != null) "userId": userId,
           if (role != null) "role": role,
+          if (messageIds != null && messageIds.isNotEmpty)
+            "messageIds": messageIds,
         },
       );
     } catch (e) {

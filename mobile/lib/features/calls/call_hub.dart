@@ -196,6 +196,8 @@ class CallHub {
   Timer? _callPollTimer;
   StreamSubscription<List<ConnectivityResult>>? _networkSub;
   List<ConnectivityResult>? _lastNetwork;
+  int _networkRevision = 0;
+  bool _hubDisposed = false;
   late final MessagingSocket socket;
   late final CallController controller;
   late final PresenceController presence;
@@ -264,15 +266,59 @@ class CallHub {
   }
 
   void _watchNetwork() {
-    _networkSub = Connectivity().onConnectivityChanged.listen((results) {
-      final prev = _lastNetwork;
-      _lastNetwork = results;
-      if (prev == null) return;
-      if (!_sameNetwork(prev, results)) {
-        controller.onNetworkChanged();
-      }
+    // Dans Chrome, connectivité navigateur peut rapporter `none` même si le
+    // WebSocket applicatif est joignable. Le heartbeat WS est notre source fiable.
+    if (kIsWeb) {
+      presence.setNetworkUp(true);
+      return;
+    }
+    final connectivity = Connectivity();
+    _networkSub = connectivity.onConnectivityChanged.listen((results) {
+      _networkRevision++;
+      _applyNetworkState(results);
+    }, onError: (Object error) {
+      debugPrint("[hub] connectivity stream: $error");
+      // Une erreur du plugin n'est pas une preuve de coupure réseau.
+      presence.setNetworkUp(socket.isConnected);
     });
+    final revision = _networkRevision;
+    unawaited(() async {
+      try {
+        final results = await connectivity.checkConnectivity();
+        // Ignore an older initial snapshot if a stream update arrived first.
+        if (_hubDisposed || revision != _networkRevision) return;
+        _lastNetwork = results;
+        presence.setNetworkUp(_hasNetwork(results));
+      } catch (e) {
+        debugPrint("[hub] connectivity check: $e");
+        if (!_hubDisposed && revision == _networkRevision) {
+          // Laisser l'ACK WebSocket trancher si le plugin ne sait pas répondre.
+          presence.setNetworkUp(socket.isConnected);
+        }
+      }
+    }());
   }
+
+  void _applyNetworkState(List<ConnectivityResult> results) {
+    if (_hubDisposed) return;
+    final previous = _lastNetwork;
+    _lastNetwork = results;
+    final networkUp = _hasNetwork(results);
+    presence.setNetworkUp(networkUp);
+
+    if (previous == null) {
+      if (networkUp && !socket.isConnected) socket.reconnectNow();
+      return;
+    }
+    if (_sameNetwork(previous, results)) return;
+    controller.onNetworkChanged();
+    // Recreate the socket after interface changes so presence is restored only
+    // after the new connection receives its server handshake.
+    if (networkUp) socket.reconnectNow();
+  }
+
+  bool _hasNetwork(List<ConnectivityResult> results) =>
+      results.any((result) => result != ConnectivityResult.none);
 
   bool _sameNetwork(List<ConnectivityResult> a, List<ConnectivityResult> b) {
     if (a.length != b.length) return false;
@@ -335,8 +381,55 @@ class CallHub {
     }
 
     if (type == "message.created") {
+      unawaited(_acknowledgeIncomingDelivery(event));
       // Fire-and-forget : ne pas retarder le flux hub / inbox.
       unawaited(_onIncomingMessage(event));
+    }
+  }
+
+  Future<void> _acknowledgeIncomingDelivery(
+    Map<String, dynamic> event,
+  ) async {
+    final payload = event["payload"];
+    final message = payload is Map
+        ? Map<String, dynamic>.from(payload)
+        : const <String, dynamic>{};
+    final senderId = _firstId([
+      event["senderId"],
+      message["senderId"],
+      message["authorId"],
+    ]);
+    if (senderId == null || senderId == localUserId) return;
+    final messageId = _firstId([
+      event["messageId"],
+      event["id"],
+      message["messageId"],
+      message["id"],
+    ]);
+    final conversationId = _firstId([
+      event["conversationId"],
+      message["conversationId"],
+    ]);
+    final organizationId = _firstId([
+          event["organizationId"],
+          message["organizationId"],
+          presence.organizationId,
+        ]) ??
+        "";
+    if (messageId == null ||
+        conversationId == null ||
+        organizationId.isEmpty) {
+      return;
+    }
+    try {
+      await _messaging.conversationAction(
+        organizationId,
+        conversationId,
+        "delivered",
+        messageIds: [messageId],
+      );
+    } catch (error) {
+      debugPrint("[hub] message delivery ack failed: $error");
     }
   }
 
@@ -652,6 +745,7 @@ class CallHub {
   }
 
   void dispose() {
+    _hubDisposed = true;
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     unawaited(_networkSub?.cancel());

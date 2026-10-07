@@ -27,6 +27,11 @@ void main() {
     expect(markActiveOnAnswer(mediaAlreadyUp: true), isTrue);
   });
 
+  test("le préchauffage entrant ne traite pas ICE avant acceptation", () {
+    expect(shouldHandleIceSignal(mediaPhase: false), isFalse);
+    expect(shouldHandleIceSignal(mediaPhase: true), isTrue);
+  });
+
   test("avant le premier média, une alerte ICE ne coupe pas l'appel", () {
     final link = CallLink();
     expect(link.onIce(CallIceSignal.disconnected), CallLinkAction.none);

@@ -997,6 +997,8 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
                               items: _suggestions,
                               onTap: (v) => unawaited(_onSuggestionTap(v)),
                               isDark: isDark,
+                              vertical: _step == _BotStep.askDetail &&
+                                  _topic == "bulletin",
                               icon: switch (_step) {
                                 _BotStep.askDetail => _topic == "fees"
                                     ? Icons.payments_outlined
@@ -1040,7 +1042,7 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
 // ── UI pieces ───────────────────────────────────────────────────────────────
 
 /// Petit bouton option (icône + libellé) pour les choix côte à côte.
-class _OptionBtn extends StatelessWidget {
+class _OptionBtn extends StatefulWidget {
   const _OptionBtn({
     required this.icon,
     required this.label,
@@ -1058,16 +1060,104 @@ class _OptionBtn extends StatelessWidget {
   final bool compact;
 
   @override
+  State<_OptionBtn> createState() => _OptionBtnState();
+}
+
+class _OptionBtnState extends State<_OptionBtn> {
+  bool _pressed = false;
+
+  @override
   Widget build(BuildContext context) {
-    final bg = isDark
-        ? EteyeloColors.bubbleIncomingDark
-        : Colors.white;
-    final border = EteyeloColors.primary.withValues(alpha: enabled ? 0.35 : 0.15);
-    final fg = enabled
-        ? EteyeloColors.primary
-        : EteyeloColors.bubbleMeta;
-    final textColor = enabled
-        ? (isDark
+    if (widget.compact) return _buildCompact();
+
+    final firstColor = !widget.enabled
+        ? const Color(0xFF7896C8)
+        : _pressed
+            ? EteyeloColors.primaryDark
+            : EteyeloColors.primary;
+    final lastColor = !widget.enabled
+        ? const Color(0xFF6E88B5)
+        : _pressed
+            ? EteyeloColors.primaryDarker
+            : EteyeloColors.primaryDark;
+
+    return AnimatedScale(
+      scale: _pressed && widget.enabled ? 0.96 : 1,
+      duration: const Duration(milliseconds: 130),
+      curve: Curves.easeOutCubic,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(14),
+        child: Ink(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [firstColor, lastColor],
+            ),
+            borderRadius: BorderRadius.circular(14),
+            boxShadow: [
+              if (widget.enabled)
+                BoxShadow(
+                  color: EteyeloColors.primary.withValues(
+                    alpha: _pressed ? 0.12 : 0.24,
+                  ),
+                  blurRadius: _pressed ? 4 : 10,
+                  offset: Offset(0, _pressed ? 2 : 5),
+                ),
+            ],
+          ),
+          child: InkWell(
+            onTap: widget.enabled ? widget.onTap : null,
+            onHighlightChanged: (pressed) {
+              if (mounted && _pressed != pressed) {
+                setState(() => _pressed = pressed);
+              }
+            },
+            borderRadius: BorderRadius.circular(14),
+            splashColor: Colors.white.withValues(alpha: 0.2),
+            highlightColor: Colors.white.withValues(alpha: 0.08),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 10),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(widget.icon, size: 18, color: Colors.white),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      widget.label,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.left,
+                      style: TextStyle(
+                        color: Colors.white.withValues(
+                          alpha: widget.enabled ? 1 : 0.86,
+                        ),
+                        fontWeight: FontWeight.w700,
+                        fontSize: 10.5,
+                        height: 1.1,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCompact() {
+    final bg = widget.isDark ? EteyeloColors.bubbleIncomingDark : Colors.white;
+    final border = EteyeloColors.primary.withValues(
+      alpha: widget.enabled ? 0.35 : 0.15,
+    );
+    final fg =
+        widget.enabled ? EteyeloColors.primary : EteyeloColors.bubbleMeta;
+    final textColor = widget.enabled
+        ? (widget.isDark
             ? EteyeloColors.bubbleIncomingTextDark
             : EteyeloColors.bubbleIncomingText)
         : EteyeloColors.bubbleMeta;
@@ -1076,17 +1166,11 @@ class _OptionBtn extends StatelessWidget {
       color: bg,
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
-        onTap: enabled ? onTap : null,
+        onTap: widget.enabled ? widget.onTap : null,
         borderRadius: BorderRadius.circular(12),
         child: Container(
-          constraints: BoxConstraints(
-            minWidth: compact ? 72 : 0,
-            maxWidth: compact ? 140 : double.infinity,
-          ),
-          padding: EdgeInsets.symmetric(
-            horizontal: compact ? 10 : 8,
-            vertical: compact ? 8 : 10,
-          ),
+          constraints: const BoxConstraints(minWidth: 72, maxWidth: 140),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: border),
@@ -1094,16 +1178,16 @@ class _OptionBtn extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: compact ? 20 : 22, color: fg),
+              Icon(widget.icon, size: 20, color: fg),
               const SizedBox(height: 4),
               Text(
-                label,
+                widget.label,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontWeight: FontWeight.w600,
-                  fontSize: compact ? 11 : 12,
+                  fontSize: 11,
                   height: 1.15,
                   color: textColor,
                 ),
@@ -1132,12 +1216,10 @@ class _TopicRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bar = isDark
-        ? EteyeloColors.chatInputBarDark
-        : EteyeloColors.chatInputBar;
-    final border = isDark
-        ? EteyeloColors.listDividerDark
-        : EteyeloColors.listDivider;
+    final bar =
+        isDark ? EteyeloColors.chatInputBarDark : EteyeloColors.chatInputBar;
+    final border =
+        isDark ? EteyeloColors.listDividerDark : EteyeloColors.listDivider;
 
     return Container(
       width: double.infinity,
@@ -1189,21 +1271,21 @@ class _SuggestionStrip extends StatelessWidget {
     required this.onTap,
     required this.isDark,
     required this.icon,
+    this.vertical = false,
   });
 
   final List<String> items;
   final void Function(String) onTap;
   final bool isDark;
   final IconData icon;
+  final bool vertical;
 
   @override
   Widget build(BuildContext context) {
-    final bar = isDark
-        ? EteyeloColors.chatInputBarDark
-        : EteyeloColors.chatInputBar;
-    final border = isDark
-        ? EteyeloColors.listDividerDark
-        : EteyeloColors.listDivider;
+    final bar =
+        isDark ? EteyeloColors.chatInputBarDark : EteyeloColors.chatInputBar;
+    final border =
+        isDark ? EteyeloColors.listDividerDark : EteyeloColors.listDivider;
 
     return Container(
       width: double.infinity,
@@ -1212,24 +1294,95 @@ class _SuggestionStrip extends StatelessWidget {
         border: Border(top: BorderSide(color: border)),
       ),
       padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            for (final item in items) ...[
-              _OptionBtn(
-                icon: icon,
-                label: item,
-                enabled: true,
-                isDark: isDark,
-                compact: true,
-                onTap: () => onTap(item),
+      child: vertical
+          ? ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 224),
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                itemCount: items.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 7),
+                itemBuilder: (context, index) {
+                  final item = items[index];
+                  final foreground = isDark
+                      ? EteyeloColors.bubbleIncomingTextDark
+                      : EteyeloColors.bubbleIncomingText;
+                  final tile = isDark
+                      ? EteyeloColors.bubbleIncomingDark
+                      : Colors.white;
+                  final accent = isDark
+                      ? EteyeloColors.primaryDark
+                      : EteyeloColors.primary;
+
+                  return Material(
+                    color: tile,
+                    borderRadius: BorderRadius.circular(14),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: () => onTap(item),
+                      child: Container(
+                        constraints: const BoxConstraints(minHeight: 52),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 13, vertical: 9),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: accent.withValues(alpha: 0.16),
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 34,
+                              height: 34,
+                              decoration: BoxDecoration(
+                                color: accent.withValues(alpha: 0.10),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Icon(icon, size: 18, color: accent),
+                            ),
+                            const SizedBox(width: 11),
+                            Expanded(
+                              child: Text(
+                                item,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: foreground,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Icon(Icons.chevron_right_rounded,
+                                color: accent, size: 21),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
               ),
-              const SizedBox(width: 8),
-            ],
-          ],
-        ),
-      ),
+            )
+          : SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  for (final item in items) ...[
+                    _OptionBtn(
+                      icon: icon,
+                      label: item,
+                      enabled: true,
+                      isDark: isDark,
+                      compact: true,
+                      onTap: () => onTap(item),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                ],
+              ),
+            ),
     );
   }
 }
@@ -1253,9 +1406,8 @@ class _ComposerBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bar = isDark
-        ? EteyeloColors.chatInputBarDark
-        : EteyeloColors.chatInputBar;
+    final bar =
+        isDark ? EteyeloColors.chatInputBarDark : EteyeloColors.chatInputBar;
     return SafeArea(
       top: false,
       child: Container(
@@ -1267,9 +1419,8 @@ class _ComposerBar extends StatelessWidget {
             Expanded(
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: isDark
-                      ? EteyeloColors.bubbleIncomingDark
-                      : Colors.white,
+                  color:
+                      isDark ? EteyeloColors.bubbleIncomingDark : Colors.white,
                   borderRadius: BorderRadius.circular(24),
                 ),
                 child: TextField(
@@ -1309,7 +1460,8 @@ class _ComposerBar extends StatelessWidget {
                 child: const SizedBox(
                   width: 48,
                   height: 48,
-                  child: Icon(Icons.send_rounded, color: Colors.white, size: 22),
+                  child:
+                      Icon(Icons.send_rounded, color: Colors.white, size: 22),
                 ),
               ),
             ),

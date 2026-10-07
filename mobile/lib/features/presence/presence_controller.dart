@@ -24,35 +24,44 @@ class PresenceInfo {
 class PresenceController extends ChangeNotifier {
   final Map<String, PresenceInfo> _byUser = {};
   String? _organizationId;
-  /// Lien WS local : sans ça, personne n'est affichée « en ligne ».
-  /// Démarre à true pour éviter un flash « hors ligne » avant le 1er connect ;
-  /// [setLinkUp] le coupe dès que le socket tombe.
-  bool _linkUp = true;
+
+  /// Présence distante visible seulement si le réseau et le WebSocket sont actifs.
+  bool _networkUp = true;
+  bool _socketUp = false;
 
   String? get organizationId => _organizationId;
 
-  bool get linkUp => _linkUp;
+  bool get linkUp => _networkUp && _socketUp;
 
   PresenceInfo? of(String userId) {
     final info = _byUser[userId];
     if (info == null) return null;
-    if (!_linkUp && info.online) {
+    if (!linkUp && info.online) {
       return info.copyWith(online: false);
     }
     return info;
   }
 
-  bool isOnline(String userId) =>
-      _linkUp && _byUser[userId]?.online == true;
+  bool isOnline(String userId) => linkUp && _byUser[userId]?.online == true;
 
   DateTime? lastSeenAt(String userId) => _byUser[userId]?.lastSeenAt;
 
   /// Appelé quand le WebSocket local tombe / revient.
-  /// Ne mute pas le cache : [isOnline] / [of] masquent déjà via [_linkUp],
-  /// pour que les pastilles vertes réapparaissent dès la reconnexion.
   void setLinkUp(bool up) {
-    if (_linkUp == up) return;
-    _linkUp = up;
+    _updateLink(socketUp: up);
+  }
+
+  /// Un réseau absent masque immédiatement la présence; le retour du réseau
+  /// seul ne la réactive pas tant que le WebSocket n'est pas reconnecté.
+  void setNetworkUp(bool up) {
+    _updateLink(networkUp: up);
+  }
+
+  void _updateLink({bool? networkUp, bool? socketUp}) {
+    final wasUp = linkUp;
+    if (networkUp != null) _networkUp = networkUp;
+    if (socketUp != null) _socketUp = socketUp;
+    if (wasUp == linkUp) return;
     notifyListeners();
   }
 
@@ -65,13 +74,18 @@ class PresenceController extends ChangeNotifier {
 
   void applyEvent(Map<String, dynamic> event) {
     final type = event["type"]?.toString() ?? "";
+    final payload = event["payload"];
+    final data = payload is Map
+        ? <String, dynamic>{...event, ...Map<String, dynamic>.from(payload)}
+        : event;
     if (type == "presence.snapshot") {
-      final items = event["items"];
+      final items = event["items"] ??
+          (payload is Map ? payload["items"] : null);
       if (items is! List) return;
       for (final raw in items) {
         if (raw is! Map) continue;
         _upsert(
-          userId: raw["userId"]?.toString(),
+          userId: _userId(raw),
           status: raw["status"]?.toString(),
           lastSeenRaw: raw["lastSeenAt"]?.toString(),
           onlineFlag: raw["online"] is bool ? raw["online"] as bool : null,
@@ -85,9 +99,9 @@ class PresenceController extends ChangeNotifier {
     // Accepte les événements de toutes les orgs : un user connecté
     // à l’app est considéré en ligne pour le chat.
     _upsert(
-      userId: event["userId"]?.toString(),
-      status: event["status"]?.toString(),
-      lastSeenRaw: event["lastSeenAt"]?.toString(),
+      userId: _userId(data),
+      status: data["status"]?.toString(),
+      lastSeenRaw: data["lastSeenAt"]?.toString(),
     );
     notifyListeners();
   }
@@ -96,13 +110,20 @@ class PresenceController extends ChangeNotifier {
     for (final raw in items) {
       if (raw is! Map) continue;
       _upsert(
-        userId: raw["userId"]?.toString(),
+        userId: _userId(raw),
         status: raw["status"]?.toString(),
         lastSeenRaw: raw["lastSeenAt"]?.toString(),
         onlineFlag: raw["online"] is bool ? raw["online"] as bool : null,
       );
     }
     notifyListeners();
+  }
+
+  String? _userId(Map raw) {
+    final user = raw["user"];
+    return raw["userId"]?.toString() ??
+        raw["user_id"]?.toString() ??
+        (user is Map ? user["id"]?.toString() : null);
   }
 
   void _upsert({
@@ -114,7 +135,9 @@ class PresenceController extends ChangeNotifier {
     if (userId == null || userId.isEmpty) return;
     final lastSeen =
         lastSeenRaw != null ? DateTime.tryParse(lastSeenRaw)?.toLocal() : null;
-    final online = onlineFlag ?? (status?.toUpperCase() == "ONLINE");
+    final normalizedStatus = status?.toUpperCase();
+    final online = onlineFlag ??
+        (normalizedStatus == "ONLINE" || normalizedStatus == "CONNECTED");
     final prev = _byUser[userId];
     _byUser[userId] = PresenceInfo(
       userId: userId,

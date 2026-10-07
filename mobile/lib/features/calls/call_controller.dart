@@ -336,6 +336,10 @@ class CallController extends ChangeNotifier {
         unawaited(_applyAudioRoute());
         _safeNotify();
       }
+      // Chrome peut avoir établi ICE pendant le préchauffage de la sonnerie.
+      // Dans ce cas l'événement connected a été volontairement ignoré ;
+      // relire l'état courant à l'arrivée du média pour activer l'interface.
+      unawaited(_syncIceConnectionState());
     };
 
     // ICE connection state drives media-up / restart / fail (CallLink).
@@ -457,10 +461,7 @@ class CallController extends ChangeNotifier {
   }
 
   void _onLinkSignal(CallIceSignal signal) {
-    if (!_mediaPhase && signal != CallIceSignal.connected &&
-        signal != CallIceSignal.completed) {
-      return;
-    }
+    if (!shouldHandleIceSignal(mediaPhase: _mediaPhase)) return;
     final action = _link.onIce(signal);
     switch (action) {
       case CallLinkAction.mediaUp:
@@ -484,6 +485,19 @@ class CallController extends ChangeNotifier {
         break;
       case CallLinkAction.none:
         break;
+    }
+  }
+
+  Future<void> _syncIceConnectionState() async {
+    final pc = _pc;
+    if (pc == null || _disposed || _ending || _link.mediaUp) return;
+    try {
+      final state = await pc.getIceConnectionState();
+      if (state == null || pc != _pc || _disposed || _ending) return;
+      debugPrint("[call] ice current=$state phase=$phase");
+      _onLinkSignal(parseIceSignal(state.toString()));
+    } catch (e) {
+      debugPrint("[call] read ICE state: $e");
     }
   }
 
@@ -1449,6 +1463,9 @@ class CallController extends ChangeNotifier {
     _stopOfferResend();
     _stopRingTimeout();
     _safeNotify();
+    // Reprendre un état ICE devenu connected pendant la sonnerie : Chrome ne
+    // réémet pas toujours le callback après que la phase passe à connecting.
+    unawaited(_syncIceConnectionState());
   }
 
   Future<void> rejectIncoming() async {
