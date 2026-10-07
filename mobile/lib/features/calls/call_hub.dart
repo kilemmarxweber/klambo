@@ -25,6 +25,7 @@ import "package:klambo_messagerie/features/calls/call_signal_policy.dart";
 import "package:klambo_messagerie/features/calls/call_screen.dart";
 import "package:klambo_messagerie/features/chat/active_chat_provider.dart";
 import "package:klambo_messagerie/features/presence/presence_controller.dart";
+import "package:klambo_messagerie/features/presence/platform_network.dart";
 
 final callsRepositoryProvider = Provider<CallsRepository>(
   (ref) => CallsRepository(ref.watch(apiClientProvider)),
@@ -195,6 +196,7 @@ class CallHub {
   final List<String> Function()? _readOrganizationIds;
   Timer? _callPollTimer;
   StreamSubscription<List<ConnectivityResult>>? _networkSub;
+  StreamSubscription<bool>? _platformNetworkSub;
   List<ConnectivityResult>? _lastNetwork;
   int _networkRevision = 0;
   bool _hubDisposed = false;
@@ -266,10 +268,17 @@ class CallHub {
   }
 
   void _watchNetwork() {
-    // Dans Chrome, connectivité navigateur peut rapporter `none` même si le
-    // WebSocket applicatif est joignable. Le heartbeat WS est notre source fiable.
     if (kIsWeb) {
-      presence.setNetworkUp(true);
+      presence.setNetworkUp(platformNetworkIsUp);
+      _platformNetworkSub = platformNetworkChanges.listen((networkUp) {
+        if (_hubDisposed) return;
+        presence.setNetworkUp(networkUp);
+        if (!networkUp) {
+          controller.onNetworkChanged();
+        } else if (!socket.isConnected) {
+          socket.reconnectNow();
+        }
+      });
       return;
     }
     final connectivity = Connectivity();
@@ -279,7 +288,7 @@ class CallHub {
     }, onError: (Object error) {
       debugPrint("[hub] connectivity stream: $error");
       // Une erreur du plugin n'est pas une preuve de coupure réseau.
-      presence.setNetworkUp(socket.isConnected);
+      presence.setNetworkUp(true);
     });
     final revision = _networkRevision;
     unawaited(() async {
@@ -293,7 +302,7 @@ class CallHub {
         debugPrint("[hub] connectivity check: $e");
         if (!_hubDisposed && revision == _networkRevision) {
           // Laisser l'ACK WebSocket trancher si le plugin ne sait pas répondre.
-          presence.setNetworkUp(socket.isConnected);
+          presence.setNetworkUp(true);
         }
       }
     }());
@@ -750,6 +759,8 @@ class CallHub {
     _heartbeatTimer = null;
     unawaited(_networkSub?.cancel());
     _networkSub = null;
+    unawaited(_platformNetworkSub?.cancel());
+    _platformNetworkSub = null;
     _callPollTimer?.cancel();
     _callPollTimer = null;
     controller.removeListener(_onCallPhaseChanged);

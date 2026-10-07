@@ -60,6 +60,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
   StreamSubscription<Map<String, dynamic>>? _hubEventsSub;
   Timer? _reloadDebounce;
   Timer? _pollTimer;
+  Timer? _presencePollTimer;
   PresenceController? _presence;
   bool _listPrimed = false;
   final Map<String, String> _lastMessageKeys = {};
@@ -140,6 +141,11 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
         if (!mounted || !shouldPollInbox(socketConnected: up)) return;
         unawaited(_load(silent: true, catchUp: _listPrimed));
       });
+      _presencePollTimer = Timer.periodic(presenceFallbackInterval, (_) {
+        final hub = ref.read(callHubProvider);
+        if (!mounted || hub?.socket.isConnected == true) return;
+        unawaited(_refreshPresenceSnapshot());
+      });
     });
   }
 
@@ -160,6 +166,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     _hubSub?.close();
     _reloadDebounce?.cancel();
     _pollTimer?.cancel();
+    _presencePollTimer?.cancel();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -806,7 +813,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
           "${l10n.officialWebsite}: ${PublisherInfo.websiteUrl}",
         ),
         const SizedBox(height: 4),
-        SelectableText("Package: ${PublisherInfo.packageId}"),
+        const SelectableText("Package: ${PublisherInfo.packageId}"),
       ],
     );
   }

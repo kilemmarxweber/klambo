@@ -1,3 +1,5 @@
+import "dart:async";
+
 import "package:flutter/foundation.dart";
 
 class PresenceInfo {
@@ -22,37 +24,50 @@ class PresenceInfo {
 
 /// Suivi présence en ligne (WS + snapshot REST).
 class PresenceController extends ChangeNotifier {
+  static const _onlineFreshness = Duration(minutes: 2);
+
   final Map<String, PresenceInfo> _byUser = {};
+  Timer? _expiryTimer;
   String? _organizationId;
 
-  /// Présence distante visible seulement si le réseau et le WebSocket sont actifs.
+  /// La présence REST reste utilisable quand le serveur WebSocket est indisponible.
   bool _networkUp = true;
   bool _socketUp = false;
 
   String? get organizationId => _organizationId;
 
-  bool get linkUp => _networkUp && _socketUp;
+  bool get linkUp => _networkUp;
+  bool get socketUp => _socketUp;
 
   PresenceInfo? of(String userId) {
     final info = _byUser[userId];
     if (info == null) return null;
-    if (!linkUp && info.online) {
-      return info.copyWith(online: false);
+    if (info.online && (!linkUp || !_isFresh(info))) {
+      return PresenceInfo(
+        userId: info.userId,
+        online: false,
+        lastSeenAt: info.lastSeenAt,
+      );
     }
     return info;
   }
 
-  bool isOnline(String userId) => linkUp && _byUser[userId]?.online == true;
+  bool isOnline(String userId) {
+    final info = _byUser[userId];
+    if (!linkUp || info == null || !info.online) return false;
+    return _isFresh(info);
+  }
 
   DateTime? lastSeenAt(String userId) => _byUser[userId]?.lastSeenAt;
 
   /// Appelé quand le WebSocket local tombe / revient.
   void setLinkUp(bool up) {
     _updateLink(socketUp: up);
+    if (up) setNetworkUp(true);
   }
 
-  /// Un réseau absent masque immédiatement la présence; le retour du réseau
-  /// seul ne la réactive pas tant que le WebSocket n'est pas reconnecté.
+  /// Un réseau absent masque immédiatement la présence. Les snapshots REST
+  /// peuvent la rétablir sans attendre la reconnexion du WebSocket.
   void setNetworkUp(bool up) {
     _updateLink(networkUp: up);
   }
@@ -73,6 +88,7 @@ class PresenceController extends ChangeNotifier {
   }
 
   void applyEvent(Map<String, dynamic> event) {
+    setNetworkUp(true);
     final type = event["type"]?.toString() ?? "";
     final payload = event["payload"];
     final data = payload is Map
@@ -107,6 +123,9 @@ class PresenceController extends ChangeNotifier {
   }
 
   void applyRestItems(List<dynamic> items) {
+    // Une réponse REST réussie prouve que l'API est joignable, même si le
+    // plugin de connectivité ou le WebSocket a signalé une coupure.
+    setNetworkUp(true);
     for (final raw in items) {
       if (raw is! Map) continue;
       _upsert(
@@ -144,10 +163,55 @@ class PresenceController extends ChangeNotifier {
       online: online,
       lastSeenAt: lastSeen ?? (online ? DateTime.now() : prev?.lastSeenAt),
     );
+    _scheduleExpiryCheck();
+  }
+
+  bool _isFresh(PresenceInfo info) {
+    final lastSeen = info.lastSeenAt;
+    if (lastSeen == null) return false;
+    return DateTime.now().difference(lastSeen) <= _onlineFreshness;
+  }
+
+  void _scheduleExpiryCheck() {
+    _expiryTimer?.cancel();
+    final deadlines = _byUser.values
+        .where((info) => info.online && info.lastSeenAt != null)
+        .map((info) => info.lastSeenAt!.add(_onlineFreshness))
+        .toList();
+    if (deadlines.isEmpty) return;
+    deadlines.sort();
+    final delay = deadlines.first.difference(DateTime.now());
+    _expiryTimer = Timer(delay.isNegative ? Duration.zero : delay, () {
+      var changed = false;
+      for (final entry in _byUser.entries.toList()) {
+        final info = entry.value;
+        if (info.online && !_isFresh(info)) {
+          _byUser[entry.key] = PresenceInfo(
+            userId: info.userId,
+            online: false,
+            lastSeenAt: info.lastSeenAt,
+          );
+          changed = true;
+        }
+      }
+      if (changed) notifyListeners();
+      if (_byUser.values.any((info) => info.online && info.lastSeenAt != null)) {
+        _scheduleExpiryCheck();
+      }
+    });
   }
 
   void clear() {
     _byUser.clear();
+    _expiryTimer?.cancel();
+    _expiryTimer = null;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _expiryTimer?.cancel();
+    _expiryTimer = null;
+    super.dispose();
   }
 }
