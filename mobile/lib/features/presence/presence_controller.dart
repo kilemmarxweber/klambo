@@ -24,14 +24,43 @@ class PresenceInfo {
 class PresenceController extends ChangeNotifier {
   final Map<String, PresenceInfo> _byUser = {};
   String? _organizationId;
+  /// Lien WS local : sans ça, personne n'est affichée « en ligne ».
+  bool _linkUp = false;
 
   String? get organizationId => _organizationId;
 
-  PresenceInfo? of(String userId) => _byUser[userId];
+  bool get linkUp => _linkUp;
 
-  bool isOnline(String userId) => _byUser[userId]?.online == true;
+  PresenceInfo? of(String userId) {
+    final info = _byUser[userId];
+    if (info == null) return null;
+    if (!_linkUp && info.online) {
+      return info.copyWith(online: false);
+    }
+    return info;
+  }
+
+  bool isOnline(String userId) =>
+      _linkUp && _byUser[userId]?.online == true;
 
   DateTime? lastSeenAt(String userId) => _byUser[userId]?.lastSeenAt;
+
+  /// Appelé quand le WebSocket local tombe / revient.
+  void setLinkUp(bool up) {
+    if (_linkUp == up) return;
+    _linkUp = up;
+    if (!up) {
+      final now = DateTime.now();
+      for (final entry in _byUser.entries.toList()) {
+        if (!entry.value.online) continue;
+        _byUser[entry.key] = entry.value.copyWith(
+          online: false,
+          lastSeenAt: now,
+        );
+      }
+    }
+    notifyListeners();
+  }
 
   void setOrganization(String organizationId) {
     if (_organizationId == organizationId) return;

@@ -2,6 +2,8 @@ import "dart:async";
 
 import "package:flutter/foundation.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
+import "package:klambo_messagerie/features/auth/session_provider.dart";
+import "package:klambo_messagerie/features/calls/call_hub.dart";
 
 /// Suit les conversations où un correspondant est en train d'écrire.
 class TypingStore extends ChangeNotifier {
@@ -48,6 +50,45 @@ class TypingStore extends ChangeNotifier {
 
 final typingStoreProvider = ChangeNotifierProvider<TypingStore>((ref) {
   final store = TypingStore();
-  ref.onDispose(store.dispose);
+  StreamSubscription<Map<String, dynamic>>? sub;
+
+  void bind(CallHub? hub) {
+    sub?.cancel();
+    sub = null;
+    if (hub == null) return;
+    sub = hub.messageEvents.listen((event) {
+      final type = event["type"]?.toString() ?? "";
+      if (type == "typing") {
+        final convId = event["conversationId"]?.toString();
+        final uid = event["userId"]?.toString();
+        final me = ref.read(sessionProvider).me?["user"];
+        final myId = me is Map ? me["id"]?.toString() : null;
+        if (convId == null ||
+            convId.isEmpty ||
+            uid == null ||
+            uid == myId) {
+          return;
+        }
+        store.note(convId);
+        return;
+      }
+      if (type == "message.created") {
+        final payload = event["payload"];
+        final convId = event["conversationId"]?.toString() ??
+            (payload is Map ? payload["conversationId"]?.toString() : null);
+        if (convId != null && convId.isNotEmpty) store.clear(convId);
+      }
+    });
+  }
+
+  ref.listen<CallHub?>(
+    callHubProvider,
+    (_, next) => bind(next),
+    fireImmediately: true,
+  );
+  ref.onDispose(() {
+    sub?.cancel();
+    store.dispose();
+  });
   return store;
 });

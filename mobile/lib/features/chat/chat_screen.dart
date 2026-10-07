@@ -168,7 +168,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   String? _sendError;
   bool _calling = false;
   PresenceController? _presence;
-  ProviderSubscription<AsyncValue<Map<String, dynamic>>>? _eventsSub;
+  StreamSubscription<Map<String, dynamic>>? _hubEventsSub;
   StateController<String?>? _activeConvCtrl;
   bool _typingPeer = false;
   Timer? _typingClear;
@@ -177,6 +177,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Timer? _messagePoll;
   Timer? _threadRefresh;
   Timer? _draftSave;
+  /// Évite qu'un `_load` lent écrase un message WS plus récent.
+  int _loadGeneration = 0;
   bool _messagesPrimed = false;
   final Set<String> _knownMessageIds = {};
   Map<String, dynamic>? _replyTo;
@@ -241,6 +243,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   void _focusComposer() {
     _composerKey.currentState?.requestFocus();
+  }
+
+  /// Garde le curseur dans le champ après un refresh / message entrant.
+  void _keepComposerFocus({bool wasFocused = true}) {
+    if (!wasFocused) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _composerBlocked) return;
+      _focusComposer();
+    });
+  }
+
+  void _bindHubEvents() {
+    _hubEventsSub?.cancel();
+    final hub = ref.read(callHubProvider);
+    // Écoute directe du hub (pas StreamProvider) : chaque event WS arrive.
+    _hubEventsSub = hub?.messageEvents.listen(
+      _onRealtimeEvent,
+      onError: (Object e) => debugPrint("[chat] hub events: $e"),
+    );
   }
 
   void _selectMessageForReply(Map msg) {
@@ -325,14 +346,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       unawaited(_restoreDraft());
       _load(silent: false);
       _bindPresence();
-      _eventsSub = ref.listenManual(messagingEventsProvider, (_, next) {
-        next.whenData(_onRealtimeEvent);
-      });
-      // Le fil est chargé une fois. Secours HTTP seulement si le socket tombe.
-      _messagePoll = Timer.periodic(threadFallbackInterval, (_) {
+      _bindHubEvents();
+      // Filet HTTP léger : 12 s si WS up, 30 s si down — sans écraser le live.
+      _messagePoll = Timer.periodic(threadCatchUpInterval, (_) {
+        if (!mounted || !shouldPollThread(socketConnected: true)) return;
         final up = ref.read(callHubProvider)?.socket.isConnected ?? false;
-        if (!mounted || !shouldPollThread(socketConnected: up)) return;
-        unawaited(_load(silent: true));
+        // Quand le WS est down, on laisse aussi tourner le rythme 12 s
+        // (plus réactif que 30 s pour un fil ouvert).
+        if (!up || _messages.isNotEmpty) {
+          unawaited(_load(silent: true));
+        }
       });
     });
   }
@@ -373,6 +396,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final payload = event["payload"];
     final convId = event["conversationId"]?.toString() ??
         (payload is Map ? payload["conversationId"]?.toString() : null);
+
+    if (type == "link.up" || type == "link.down") {
+      if (mounted) setState(() {});
+      if (type == "link.up") unawaited(_bindPresence());
+      return;
+    }
 
     if (type == "typing") {
       if (convId != null && convId != widget.conversationId) return;
@@ -420,17 +449,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         final me = ref.read(sessionProvider).me?["user"];
         final myId = me is Map ? me["id"]?.toString() : null;
         if (senderId != null && senderId != myId) _clearPeerTyping();
-        // Appliquer le WS tout de suite (style WhatsApp) ; HTTP en filet.
+        // Appliquer le WS tout de suite ; HTTP seulement pour pièces jointes.
         if (_applyRealtimeCreated(event)) {
           _threadRefresh?.cancel();
-          _threadRefresh = Timer(const Duration(milliseconds: 1800), () {
+          _threadRefresh = Timer(const Duration(seconds: 4), () {
             if (mounted) unawaited(_load(silent: true));
           });
           return;
         }
       }
       _threadRefresh?.cancel();
-      _threadRefresh = Timer(const Duration(milliseconds: 400), () {
+      _threadRefresh = Timer(const Duration(milliseconds: 250), () {
         if (mounted) unawaited(_load(silent: true));
       });
     }
@@ -438,11 +467,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   /// Insert / confirme un message depuis `message.created` sans attendre HTTP.
   bool _applyRealtimeCreated(Map<String, dynamic> event) {
+    final payload = event["payload"];
     final id = event["messageId"]?.toString() ??
         event["id"]?.toString() ??
-        (event["payload"] is Map
-            ? (event["payload"] as Map)["messageId"]?.toString()
-            : null);
+        (payload is Map ? payload["messageId"]?.toString() : null) ??
+        (payload is Map ? payload["id"]?.toString() : null);
     if (id == null || id.isEmpty) return false;
     if (_knownMessageIds.contains(id)) return true;
     for (final m in _messages) {
@@ -452,12 +481,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
     }
 
-    final senderId = event["senderId"]?.toString();
+    final senderId = event["senderId"]?.toString() ??
+        (payload is Map ? payload["senderId"]?.toString() : null);
     final body = event["bodyPreview"]?.toString() ??
         event["body"]?.toString() ??
+        (payload is Map ? payload["body"]?.toString() : null) ??
         "";
     final me = ref.read(sessionProvider).me?["user"];
     final myId = me is Map ? me["id"]?.toString() : null;
+    final keepFocus = _composerKey.currentState?.hasFocus ?? true;
 
     if (senderId != null && senderId == myId) {
       final pendingIdx = _messages.lastIndexWhere((m) {
@@ -465,7 +497,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         if (body.isEmpty) return true;
         return m["body"]?.toString() == body;
       });
-      if (pendingIdx < 0) return false;
+      if (pendingIdx < 0) {
+        // Pas de pending local : quand même afficher (autre appareil).
+        setState(() {
+          _messages = [
+            ..._messages,
+            {
+              "id": id,
+              "senderId": senderId,
+              "senderName": event["senderName"]?.toString() ?? "",
+              "senderImage": event["senderImage"],
+              "body": body,
+              "createdAt": DateTime.now().toUtc().toIso8601String(),
+              "attachments": const [],
+            },
+          ];
+        });
+        _knownMessageIds.add(id);
+        _keepComposerFocus(wasFocused: keepFocus);
+        return true;
+      }
       setState(() {
         final copy = Map<String, dynamic>.from(_messages[pendingIdx] as Map);
         copy["id"] = id;
@@ -474,6 +525,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         _messages[pendingIdx] = copy;
       });
       _knownMessageIds.add(id);
+      _keepComposerFocus(wasFocused: keepFocus);
       return true;
     }
 
@@ -486,7 +538,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           "senderName": event["senderName"]?.toString() ?? "",
           "senderImage": event["senderImage"],
           "body": body,
-          "createdAt": DateTime.now().toUtc().toIso8601String(),
+          "createdAt":
+              event["createdAt"]?.toString() ??
+              DateTime.now().toUtc().toIso8601String(),
           "attachments": const [],
         },
       ];
@@ -495,12 +549,50 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _scrollToBottom(force: true, animated: true);
     });
+    _keepComposerFocus(wasFocused: keepFocus);
     return true;
+  }
+
+  /// Fusionne le fil HTTP avec les messages déjà affichés (pending / WS).
+  List<Map<String, dynamic>> _mergeThread(
+    List<Map<String, dynamic>> incoming, {
+    required bool fromCache,
+  }) {
+    if (_messages.isEmpty) return incoming;
+    final byId = <String, Map<String, dynamic>>{};
+    for (final m in incoming) {
+      final id = m["id"]?.toString();
+      if (id == null || id.isEmpty) continue;
+      byId[id] = m;
+    }
+    for (final raw in _messages) {
+      if (raw is! Map) continue;
+      final m = Map<String, dynamic>.from(raw);
+      final id = m["id"]?.toString();
+      if (id == null || id.isEmpty) continue;
+      if (m["pending"] == true) {
+        byId.putIfAbsent(id, () => m);
+        continue;
+      }
+      // Cache ou réponse incomplète : ne pas perdre un message déjà à l'écran.
+      if (!byId.containsKey(id)) {
+        byId[id] = m;
+      }
+    }
+    final list = byId.values.toList();
+    list.sort((a, b) {
+      final ta = DateTime.tryParse(a["createdAt"]?.toString() ?? "") ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      final tb = DateTime.tryParse(b["createdAt"]?.toString() ?? "") ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      return ta.compareTo(tb);
+    });
+    return list;
   }
 
   @override
   void dispose() {
-    _eventsSub?.close();
+    _hubEventsSub?.cancel();
     _input.removeListener(_onInputChanged);
     _typingClear?.cancel();
     _threadRefresh?.cancel();
@@ -638,6 +730,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   String? _presenceSubtitle(L10n l10n) {
     final peerId = widget.peerUserId;
     if (peerId == null) return null;
+    final hub = ref.read(callHubProvider);
+    // Pas de pastille / « en ligne » si notre WS est coupé.
+    if (hub == null || !hub.socket.isConnected || _presence?.linkUp != true) {
+      return l10n.offline;
+    }
     final info = _presence?.of(peerId);
     if (info == null) return null;
     if (info.online) return l10n.online;
@@ -785,19 +882,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   Future<void> _load({bool silent = false}) async {
     // Pas de gros spinner plein écran : on garde le fond chat, refresh discret.
+    final gen = ++_loadGeneration;
+    final keepFocus = _composerKey.currentState?.hasFocus ?? false;
     try {
       final repo = ref.read(messagingRepositoryProvider);
       final data = await repo.listMessages(
         widget.organizationId,
         widget.conversationId,
       );
+      if (!mounted || gen != _loadGeneration) return;
       final items = (data["items"] as List?) ?? [];
       final fromCache = data["fromCache"] == true;
-      final mapped = items
-          .whereType<Map>()
-          .map((e) => Map<String, dynamic>.from(e))
-          .toList();
-      if (!mounted) return;
+      // Cache obsolète : ne jamais écraser un fil déjà live.
+      if (fromCache && silent && _messages.isNotEmpty) {
+        return;
+      }
+      final mapped = _mergeThread(
+        items
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList(),
+        fromCache: fromCache,
+      );
       final wasEmpty = _messages.isEmpty;
       final hasPeerReadKey = data.containsKey("peerLastReadAt");
       final peerReadRaw = data["peerLastReadAt"]?.toString();
@@ -834,10 +940,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       });
       if (!fromCache) {
         _chimeNewChatMessages(mapped, myId);
-        await repo.conversationAction(
-          widget.organizationId,
-          widget.conversationId,
-          "read",
+        unawaited(
+          repo.conversationAction(
+            widget.organizationId,
+            widget.conversationId,
+            "read",
+          ),
         );
       }
       if (_isNoReplyConversation) {
@@ -850,8 +958,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       } else {
         _scrollToBottom(force: false, animated: false);
       }
+      // Curseur toujours dans le champ après un refresh du fil ouvert.
+      _keepComposerFocus(wasFocused: silent ? true : keepFocus);
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || gen != _loadGeneration) return;
       setState(() {
         _loading = false;
         if (!silent) _sendError = e.toString();
@@ -1652,7 +1762,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final canCall = widget.peerUserId != null && !_isNoReplyConversation;
     final subtitle = _isNoReplyConversation
         ? "Notifications — sans réponse"
-        : (_typingPeer ? "écrit…" : _presenceSubtitle(l10n));
+        : (_typingPeer ? null : _presenceSubtitle(l10n));
+    final subtitleWidget = (!_isNoReplyConversation && _typingPeer)
+        ? const TypingAppBarSubtitle()
+        : null;
 
     return Scaffold(
       appBar: _selectionMode
@@ -1700,6 +1813,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           : EteyeloChatAppBar(
         title: _headerTitle,
         subtitle: subtitle,
+        subtitleWidget: subtitleWidget,
         peerImage: widget.peerImage,
         groupPhotos: _isGroup ? widget.memberImages : null,
         peerName: _headerTitle,

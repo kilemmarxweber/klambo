@@ -117,6 +117,7 @@ class CallHub {
     socket.onPresenceEvent = presence.applyEvent;
     socket.onConnected = () {
       debugPrint("[hub] ws connected");
+      presence.setLinkUp(true);
       _emitLink("link.up");
       _scheduleCallFallback();
       unawaited(controller.prefetchIceServers());
@@ -131,6 +132,8 @@ class CallHub {
     };
     socket.onDisconnected = () {
       debugPrint("[hub] ws disconnected");
+      // Pastilles vertes off tant que le lien n'est pas rétabli.
+      presence.setLinkUp(false);
       _emitLink("link.down");
       _scheduleCallFallback();
     };

@@ -2,11 +2,13 @@ import "package:flutter_test/flutter_test.dart";
 import "package:klambo_messagerie/features/conversations/inbox_sync_policy.dart";
 
 void main() {
-  test("pas de relecture tant que le socket est vivant", () {
+  test("pas de relecture inbox tant que le socket est vivant", () {
     expect(shouldPollInbox(socketConnected: true), isFalse);
-    expect(shouldPollThread(socketConnected: true), isFalse);
     expect(shouldPollPresence(socketConnected: true), isFalse);
     expect(shouldPollInbox(socketConnected: false), isTrue);
+    // Fil ouvert : filet HTTP même si WS up (évite message fantôme ~20 s).
+    expect(shouldPollThread(socketConnected: true), isTrue);
+    expect(shouldPollThread(socketConnected: false), isTrue);
     expect(shouldCatchUpOnLink(inboxPrimed: false), isFalse);
     expect(shouldCatchUpOnLink(inboxPrimed: true), isTrue);
   });

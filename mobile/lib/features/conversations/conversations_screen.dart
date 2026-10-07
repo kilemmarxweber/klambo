@@ -28,12 +28,14 @@ import "package:klambo_messagerie/features/conversations/new_chat_screen.dart";
 import "package:klambo_messagerie/features/conversations/new_group_screen.dart";
 import "package:klambo_messagerie/features/parent/parent_hub_screen.dart";
 import "package:klambo_messagerie/features/presence/presence_controller.dart";
+import "package:klambo_messagerie/features/presence/typing_store.dart";
 import "package:klambo_messagerie/features/settings/settings_screen.dart";
 import "package:klambo_messagerie/widgets/chat_wallpaper.dart";
 import "package:klambo_messagerie/widgets/connection_sync_bar.dart";
 import "package:klambo_messagerie/widgets/eteyelo_messaging_app_bar.dart";
 import "package:klambo_messagerie/widgets/group_avatar.dart";
 import "package:klambo_messagerie/widgets/parent_ai_fab.dart";
+import "package:klambo_messagerie/widgets/typing_dots.dart";
 import "package:klambo_messagerie/widgets/user_avatar.dart";
 
 class ConversationsScreen extends ConsumerStatefulWidget {
@@ -197,9 +199,15 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
   void _onInboxEvent(Map<String, dynamic> event) {
     final type = event["type"]?.toString() ?? "";
     if (type == "link.up") {
+      if (mounted) setState(() {});
+      unawaited(_refreshPresenceSnapshot());
       if (shouldCatchUpOnLink(inboxPrimed: _listPrimed)) {
         unawaited(_load(silent: true, catchUp: true));
       }
+      return;
+    }
+    if (type == "link.down") {
+      if (mounted) setState(() {});
       return;
     }
     final session = ref.read(sessionProvider);
@@ -831,6 +839,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
   Widget build(BuildContext context) {
     final session = ref.watch(sessionProvider);
     final l10n = ref.watch(l10nProvider);
+    final typingStore = ref.watch(typingStoreProvider);
     final user = session.me?["user"];
     final myId = user is Map ? user["id"]?.toString() : null;
     final userName = user is Map
@@ -1160,6 +1169,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                                         return label.isEmpty ? rawTitle : label;
                                       }()
                                     : rawTitle;
+                                final peerTyping = typingStore.isTyping(id);
                                 final subtitle = multiOrg && orgName.isNotEmpty
                                     ? (preview.isEmpty
                                         ? orgName
@@ -1276,6 +1286,13 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                                                       radius: 28,
                                                     ),
                                               if (!selected &&
+                                                  (ref
+                                                          .read(
+                                                            callHubProvider,
+                                                          )
+                                                          ?.socket
+                                                          .isConnected ??
+                                                      false) &&
                                                   (_presence?.isOnline(
                                                         _peerUserId(
                                                               item, myId) ??
@@ -1368,26 +1385,37 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                                               Row(
                                                 children: [
                                                   Expanded(
-                                                    child: Text(
-                                                      subtitle.isEmpty
-                                                          ? " "
-                                                          : subtitle,
-                                                      maxLines: 1,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                      style: TextStyle(
-                                                        fontSize: 14,
-                                                        color: unread > 0
-                                                            ? const Color(
-                                                                0xFF111B21,
-                                                              )
-                                                            : EteyeloColors
-                                                                .subtitle,
-                                                        fontWeight: unread > 0
-                                                            ? FontWeight.w500
-                                                            : FontWeight.w400,
-                                                      ),
-                                                    ),
+                                                    child: peerTyping
+                                                        ? const Align(
+                                                            alignment: Alignment
+                                                                .centerLeft,
+                                                            child:
+                                                                TypingListPreview(),
+                                                          )
+                                                        : Text(
+                                                            subtitle.isEmpty
+                                                                ? " "
+                                                                : subtitle,
+                                                            maxLines: 1,
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
+                                                            style: TextStyle(
+                                                              fontSize: 14,
+                                                              color: unread > 0
+                                                                  ? const Color(
+                                                                      0xFF111B21,
+                                                                    )
+                                                                  : EteyeloColors
+                                                                      .subtitle,
+                                                              fontWeight:
+                                                                  unread > 0
+                                                                      ? FontWeight
+                                                                          .w500
+                                                                      : FontWeight
+                                                                          .w400,
+                                                            ),
+                                                          ),
                                                   ),
                                                   if (unread > 0)
                                                     Container(

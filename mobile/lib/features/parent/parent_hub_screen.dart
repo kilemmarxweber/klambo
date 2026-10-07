@@ -213,12 +213,6 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
         _ => _l10n.parentBulletin,
       };
 
-  List<String> get _topicSuggestions => [
-        _l10n.parentFees,
-        _l10n.parentGrades,
-        _l10n.parentBulletin,
-      ];
-
   void _scrollToEnd() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scroll.hasClients) return;
@@ -469,7 +463,7 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
   Future<void> _askTopic() async {
     setState(() {
       _step = _BotStep.askTopic;
-      // Pas de chips : la _TopicList verticale suffit.
+      // Boutons Frais / Notes / Bulletin (_TopicRow) sous le fil.
       _suggestions = [];
       _studentByLabel.clear();
     });
@@ -1003,17 +997,22 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
                               items: _suggestions,
                               onTap: (v) => unawaited(_onSuggestionTap(v)),
                               isDark: isDark,
-                              // Frais / périodes : icône à gauche pour gagner de la place.
-                              leadingIcon: _step == _BotStep.askDetail
-                                  ? (_topic == "fees"
-                                      ? Icons.payments_outlined
-                                      : Icons.date_range_outlined)
-                                  : null,
+                              icon: switch (_step) {
+                                _BotStep.askDetail => _topic == "fees"
+                                    ? Icons.payments_outlined
+                                    : Icons.date_range_outlined,
+                                _BotStep.askClass => Icons.class_outlined,
+                                _BotStep.askName => Icons.person_outline,
+                                _ => Icons.touch_app_outlined,
+                              },
+                              // Périodes bulletin : liste verticale (comme avant).
+                              vertical: _step == _BotStep.askDetail &&
+                                  _topic == "bulletin",
                             ),
-                          // Une seule liste (verticale + icônes) pour Frais / Notes / Bulletin.
+                          // Frais / Notes / Bulletin : 3 petits boutons côte à côte.
                           if (_step == _BotStep.idle ||
                               _step == _BotStep.askTopic)
-                            _TopicList(
+                            _TopicRow(
                               l10n: l10n,
                               enabled: _step != _BotStep.loading,
                               onTap: (topic) => unawaited(_startTopic(topic)),
@@ -1043,8 +1042,86 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
 
 // ── UI pieces ───────────────────────────────────────────────────────────────
 
-class _TopicList extends StatelessWidget {
-  const _TopicList({
+/// Petit bouton option (icône + libellé) pour les choix côte à côte.
+class _OptionBtn extends StatelessWidget {
+  const _OptionBtn({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    required this.enabled,
+    required this.isDark,
+    this.compact = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  final bool enabled;
+  final bool isDark;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = isDark
+        ? EteyeloColors.bubbleIncomingDark
+        : Colors.white;
+    final border = EteyeloColors.primary.withValues(alpha: enabled ? 0.35 : 0.15);
+    final fg = enabled
+        ? EteyeloColors.primary
+        : EteyeloColors.bubbleMeta;
+    final textColor = enabled
+        ? (isDark
+            ? EteyeloColors.bubbleIncomingTextDark
+            : EteyeloColors.bubbleIncomingText)
+        : EteyeloColors.bubbleMeta;
+
+    return Material(
+      color: bg,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: enabled ? onTap : null,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          constraints: BoxConstraints(
+            minWidth: compact ? 72 : 0,
+            maxWidth: compact ? 140 : double.infinity,
+          ),
+          padding: EdgeInsets.symmetric(
+            horizontal: compact ? 10 : 8,
+            vertical: compact ? 8 : 10,
+          ),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: border),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: compact ? 20 : 22, color: fg),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: compact ? 11 : 12,
+                  height: 1.15,
+                  color: textColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Frais / Notes / Bulletin — rangée compacte.
+class _TopicRow extends StatelessWidget {
+  const _TopicRow({
     required this.l10n,
     required this.enabled,
     required this.onTap,
@@ -1065,72 +1142,43 @@ class _TopicList extends StatelessWidget {
         ? EteyeloColors.listDividerDark
         : EteyeloColors.listDivider;
 
-    Widget tile({
-      required IconData icon,
-      required String title,
-      required String topic,
-    }) {
-      return Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: enabled ? () => onTap(topic) : null,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
-            child: Row(
-              children: [
-                Icon(icon, size: 22, color: EteyeloColors.primary),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    title,
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      fontSize: 15,
-                      color: enabled
-                          ? (isDark
-                              ? EteyeloColors.bubbleIncomingTextDark
-                              : EteyeloColors.bubbleIncomingText)
-                          : EteyeloColors.bubbleMeta,
-                    ),
-                  ),
-                ),
-                const Icon(
-                  Icons.chevron_right,
-                  size: 20,
-                  color: EteyeloColors.bubbleMeta,
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    }
-
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
         color: bar,
         border: Border(top: BorderSide(color: border)),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      child: Row(
         children: [
-          tile(
-            icon: Icons.payments_outlined,
-            title: l10n.parentFees,
-            topic: "fees",
+          Expanded(
+            child: _OptionBtn(
+              icon: Icons.payments_outlined,
+              label: l10n.parentFees,
+              enabled: enabled,
+              isDark: isDark,
+              onTap: () => onTap("fees"),
+            ),
           ),
-          Divider(height: 1, color: border),
-          tile(
-            icon: Icons.school_outlined,
-            title: l10n.parentGrades,
-            topic: "grades",
+          const SizedBox(width: 8),
+          Expanded(
+            child: _OptionBtn(
+              icon: Icons.school_outlined,
+              label: l10n.parentGrades,
+              enabled: enabled,
+              isDark: isDark,
+              onTap: () => onTap("grades"),
+            ),
           ),
-          Divider(height: 1, color: border),
-          tile(
-            icon: Icons.picture_as_pdf_outlined,
-            title: l10n.parentBulletin,
-            topic: "bulletin",
+          const SizedBox(width: 8),
+          Expanded(
+            child: _OptionBtn(
+              icon: Icons.picture_as_pdf_outlined,
+              label: l10n.parentBulletin,
+              enabled: enabled,
+              isDark: isDark,
+              onTap: () => onTap("bulletin"),
+            ),
           ),
         ],
       ),
@@ -1143,13 +1191,15 @@ class _SuggestionStrip extends StatelessWidget {
     required this.items,
     required this.onTap,
     required this.isDark,
-    this.leadingIcon,
+    required this.icon,
+    this.vertical = false,
   });
 
   final List<String> items;
   final void Function(String) onTap;
   final bool isDark;
-  final IconData? leadingIcon;
+  final IconData icon;
+  final bool vertical;
 
   @override
   Widget build(BuildContext context) {
@@ -1163,8 +1213,8 @@ class _SuggestionStrip extends StatelessWidget {
         ? EteyeloColors.bubbleIncomingTextDark
         : EteyeloColors.bubbleIncomingText;
 
-    // Liste verticale + icône (frais / période) : plus compact que les chips.
-    if (leadingIcon != null) {
+    // Bulletin / périodes : liste verticale + icône (style d’origine).
+    if (vertical) {
       return Container(
         width: double.infinity,
         decoration: BoxDecoration(
@@ -1187,11 +1237,7 @@ class _SuggestionStrip extends StatelessWidget {
                     ),
                     child: Row(
                       children: [
-                        Icon(
-                          leadingIcon,
-                          size: 22,
-                          color: EteyeloColors.primary,
-                        ),
+                        Icon(icon, size: 22, color: EteyeloColors.primary),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Text(
@@ -1221,26 +1267,23 @@ class _SuggestionStrip extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      color: bar,
-      padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+      decoration: BoxDecoration(
+        color: bar,
+        border: Border(top: BorderSide(color: border)),
+      ),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 6),
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
             for (final item in items) ...[
-              ActionChip(
-                label: Text(item),
-                onPressed: () => onTap(item),
-                backgroundColor: isDark
-                    ? EteyeloColors.bubbleIncomingDark
-                    : Colors.white,
-                side: BorderSide(
-                  color: EteyeloColors.primary.withValues(alpha: 0.35),
-                ),
-                labelStyle: const TextStyle(
-                  fontWeight: FontWeight.w600,
-                  color: EteyeloColors.primaryDark,
-                ),
+              _OptionBtn(
+                icon: icon,
+                label: item,
+                enabled: true,
+                isDark: isDark,
+                compact: true,
+                onTap: () => onTap(item),
               ),
               const SizedBox(width: 8),
             ],

@@ -106,6 +106,7 @@ class EteyeloChatAppBar extends StatelessWidget implements PreferredSizeWidget {
     super.key,
     required this.title,
     this.subtitle,
+    this.subtitleWidget,
     this.peerImage,
     this.groupPhotos,
     required this.peerName,
@@ -117,6 +118,8 @@ class EteyeloChatAppBar extends StatelessWidget implements PreferredSizeWidget {
 
   final String title;
   final String? subtitle;
+  /// Si non null, remplace le texte [subtitle] (ex. indicateur « écrit… »).
+  final Widget? subtitleWidget;
   final String? peerImage;
   /// Photos des membres du groupe. Null = conversation à une personne.
   final List<String>? groupPhotos;
@@ -169,7 +172,9 @@ class EteyeloChatAppBar extends StatelessWidget implements PreferredSizeWidget {
                         fontWeight: FontWeight.w600,
                       ),
                     ),
-                    if (subtitle != null && subtitle!.isNotEmpty)
+                    if (subtitleWidget != null)
+                      subtitleWidget!
+                    else if (subtitle != null && subtitle!.isNotEmpty)
                       Text(
                         subtitle!,
                         maxLines: 1,

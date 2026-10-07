@@ -99,6 +99,8 @@ class ChatComposerState extends State<ChatComposer> {
     super.dispose();
   }
 
+  bool get hasFocus => _focus.hasFocus;
+
   /// Place le curseur dans le champ de saisie.
   void requestFocus() {
     if (!mounted || !widget.enabled || _recording) return;

@@ -4,7 +4,11 @@
 /// socket est coupé, et alors seulement pour le delta `since`.
 bool shouldPollInbox({required bool socketConnected}) => !socketConnected;
 
-bool shouldPollThread({required bool socketConnected}) => !socketConnected;
+/// Secours HTTP du fil : toujours utile (cache WS raté), plus fréquent si WS down.
+bool shouldPollThread({required bool socketConnected}) => true;
+
+/// Intervalle de rattrapage quand le socket est vivant (filet léger).
+const threadCatchUpInterval = Duration(seconds: 12);
 
 bool shouldPollPresence({required bool socketConnected}) => !socketConnected;
 
