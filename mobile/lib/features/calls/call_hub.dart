@@ -148,6 +148,8 @@ class CallHub {
       }
     });
     socket.connect();
+    // Si le socket est déjà prêt (reconnect rapide), pastilles vertes OK.
+    if (socket.isConnected) presence.setLinkUp(true);
     _watchNetwork();
     _scheduleCallFallback();
   }
@@ -333,6 +335,7 @@ class CallHub {
     }
 
     if (type == "message.created") {
+      // Fire-and-forget : ne pas retarder le flux hub / inbox.
       unawaited(_onIncomingMessage(event));
     }
   }
@@ -405,6 +408,28 @@ class CallHub {
   void rememberIncomingMessage(String dedupeKey) {
     if (dedupeKey.isEmpty) return;
     _alertedMessageKeys.add(dedupeKey);
+  }
+
+  /// Met à jour la liste (aperçu) tout de suite après un envoi local réussi.
+  void publishLocalOutgoing({
+    required String organizationId,
+    required String conversationId,
+    required String messageId,
+    required String bodyPreview,
+    String? senderName,
+  }) {
+    if (messageId.isEmpty || conversationId.isEmpty) return;
+    rememberIncomingMessage(messageId);
+    if (_messageController.isClosed) return;
+    _messageController.add({
+      "type": "message.created",
+      "organizationId": organizationId,
+      "conversationId": conversationId,
+      "messageId": messageId,
+      "senderId": localUserId,
+      "bodyPreview": bodyPreview,
+      if (senderName != null) "senderName": senderName,
+    });
   }
 
   /// Son (et notif si on n'est pas dans le fil) pour un message reçu.

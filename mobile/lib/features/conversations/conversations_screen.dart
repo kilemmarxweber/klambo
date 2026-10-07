@@ -56,12 +56,15 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
   final _searchCtrl = TextEditingController();
   final Set<String> _selectedIds = {};
   bool _selectionMode = false;
-  ProviderSubscription<AsyncValue<Map<String, dynamic>>>? _eventsSub;
+  ProviderSubscription<CallHub?>? _hubSub;
+  StreamSubscription<Map<String, dynamic>>? _hubEventsSub;
   Timer? _reloadDebounce;
   Timer? _pollTimer;
   PresenceController? _presence;
   bool _listPrimed = false;
   final Map<String, String> _lastMessageKeys = {};
+  /// Ouverture récente → grace courte ; un refresh ne doit pas effacer le non-lu.
+  final Map<String, DateTime> _locallyReadAt = {};
   bool _narrowChatPushing = false;
 
   @override
@@ -125,11 +128,13 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _bindPresence();
       _load();
-      _eventsSub = ref.listenManual(messagingEventsProvider, (_, next) {
-        next.whenData(_onInboxEvent);
-      });
-      // Secours seulement si le WebSocket est coupé. Sinon la liste reste
-      // celle chargée à la connexion, mise à jour par les événements.
+      // Écoute directe du hub (comme le chat) — pas StreamProvider (perd les events).
+      _hubSub = ref.listenManual<CallHub?>(
+        callHubProvider,
+        (_, __) => _bindHubEvents(),
+      );
+      _bindHubEvents();
+      // Filet HTTP `since` (même rythme que le fil) si Redis / WS rate un message.
       _pollTimer = Timer.periodic(inboxFallbackInterval, (_) {
         final up = ref.read(callHubProvider)?.socket.isConnected ?? false;
         if (!mounted || !shouldPollInbox(socketConnected: up)) return;
@@ -138,10 +143,21 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
     });
   }
 
+  void _bindHubEvents() {
+    _hubEventsSub?.cancel();
+    _hubEventsSub = null;
+    final hub = ref.read(callHubProvider);
+    _hubEventsSub = hub?.messageEvents.listen(
+      _onInboxEvent,
+      onError: (Object e) => debugPrint("[inbox] hub events: $e"),
+    );
+  }
+
   @override
   void dispose() {
     _presence?.removeListener(_onPresenceChanged);
-    _eventsSub?.close();
+    _hubEventsSub?.cancel();
+    _hubSub?.close();
     _reloadDebounce?.cancel();
     _pollTimer?.cancel();
     _searchCtrl.dispose();
@@ -221,13 +237,37 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
       now: DateTime.now(),
     );
     if (effect == InboxEventEffect.patched) {
-      setState(() {});
-      _chimeNewConversations(_items);
+      final convId = event["conversationId"]?.toString();
+      final mid = event["messageId"]?.toString();
+      if (convId != null &&
+          convId.isNotEmpty &&
+          mid != null &&
+          mid.isNotEmpty) {
+        _lastMessageKeys[convId] = mid;
+      }
+      if (convId != null && convId.isNotEmpty) {
+        final open = ref.read(activeConversationIdProvider) == convId;
+        final unread = _items
+            .where((item) => item["id"]?.toString() == convId)
+            .map((item) => (item["unreadCount"] as num?)?.toInt() ?? 0)
+            .firstOrNull;
+        if (open) {
+          _locallyReadAt[convId] = DateTime.now();
+        } else if (unread != null && unread > 0) {
+          _locallyReadAt.remove(convId);
+        }
+      }
+      if (mounted) {
+        setState(() {});
+        unawaited(_syncLauncherBadge(_items));
+      }
+      // Notif / son déjà déclenchés par CallHub — pas de 2e passage.
       return;
     }
     if (effect == InboxEventEffect.catchUp && _listPrimed) {
       _reloadDebounce?.cancel();
-      _reloadDebounce = Timer(const Duration(milliseconds: 400), () {
+      // Court : conversation nouvelle / edit — sans attendre 400 ms.
+      _reloadDebounce = Timer(const Duration(milliseconds: 80), () {
         if (mounted) unawaited(_load(silent: true, catchUp: true));
       });
     }
@@ -297,6 +337,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                         "organizationName": orgName,
                       })
                   .toList(),
+              locallyReadAt: _locallyReadAt,
             );
             continue;
           }
@@ -321,6 +362,22 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
         return bAt.compareTo(aAt);
       });
 
+      // Pull-to-refresh / reload complet : ne pas perdre les non-lus locaux.
+      if (!catchUp) {
+        preserveUnreadOnRefresh(
+          incoming: merged,
+          previous: _items,
+          locallyReadAt: _locallyReadAt,
+        );
+      }
+
+      // Serveur à 0 → retirer la grace « lu local ».
+      for (final item in merged) {
+        final id = item["id"]?.toString();
+        if (id == null) continue;
+        final unread = (item["unreadCount"] as num?)?.toInt() ?? 0;
+        if (unread == 0) _locallyReadAt.remove(id);
+      }
       setState(() {
         _items = merged;
         _loading = false;
@@ -676,17 +733,25 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
 
   void _markConversationReadLocally(String conversationId) {
     if (conversationId.isEmpty) return;
+    _locallyReadAt[conversationId] = DateTime.now();
     final index =
         _items.indexWhere((item) => item["id"]?.toString() == conversationId);
-    if (index < 0) return;
+    if (index < 0) {
+      unawaited(_syncLauncherBadge(_items));
+      return;
+    }
     final current = (_items[index]["unreadCount"] as num?)?.toInt() ?? 0;
-    if (current == 0) return;
+    if (current == 0) {
+      unawaited(_syncLauncherBadge(_items));
+      return;
+    }
     setState(() {
       _items[index] = {
         ...Map<String, dynamic>.from(_items[index]),
         "unreadCount": 0,
       };
     });
+    unawaited(_syncLauncherBadge(_items));
   }
 
   void _refreshInboxAfterLeavingChat() {
@@ -1286,13 +1351,6 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                                                       radius: 28,
                                                     ),
                                               if (!selected &&
-                                                  (ref
-                                                          .read(
-                                                            callHubProvider,
-                                                          )
-                                                          ?.socket
-                                                          .isConnected ??
-                                                      false) &&
                                                   (_presence?.isOnline(
                                                         _peerUserId(
                                                               item, myId) ??

@@ -76,7 +76,17 @@ final typingStoreProvider = ChangeNotifierProvider<TypingStore>((ref) {
         final payload = event["payload"];
         final convId = event["conversationId"]?.toString() ??
             (payload is Map ? payload["conversationId"]?.toString() : null);
-        if (convId != null && convId.isNotEmpty) store.clear(convId);
+        final senderId = event["senderId"]?.toString() ??
+            (payload is Map ? payload["senderId"]?.toString() : null);
+        final me = ref.read(sessionProvider).me?["user"];
+        final myId = me is Map ? me["id"]?.toString() : null;
+        // Seulement si l'autre a envoyé (pas notre propre echo).
+        if (convId != null &&
+            convId.isNotEmpty &&
+            senderId != null &&
+            senderId != myId) {
+          store.clear(convId);
+        }
       }
     });
   }

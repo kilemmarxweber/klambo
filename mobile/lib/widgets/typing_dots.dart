@@ -3,10 +3,10 @@ import "dart:math" as math;
 import "package:flutter/material.dart";
 import "package:klambo_messagerie/core/app_theme.dart";
 
-/// Points animés en sinusoïde (style WhatsApp) — « en train d'écrire ».
+/// Points animés en vague sinusoïdale (style WhatsApp) — « en train d'écrire ».
 ///
-/// Utilise [AnimationController.repeat] + [AnimatedBuilder] (docs Flutter).
-/// Couleur alpha plutôt que widget [Opacity] (coût GPU plus faible).
+/// [AnimationController.repeat] + [AnimatedBuilder] (docs Flutter).
+/// Alpha via couleur plutôt que widget [Opacity] (moins coûteux).
 class TypingDots extends StatefulWidget {
   const TypingDots({
     super.key,
@@ -34,7 +34,7 @@ class _TypingDotsState extends State<TypingDots>
   @override
   void initState() {
     super.initState();
-    // ~1,1 s : rythme proche WhatsApp, fluide sans saccades.
+    // ~1,1 s : rythme proche WhatsApp.
     _ctrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1100),
@@ -60,7 +60,7 @@ class _TypingDotsState extends State<TypingDots>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: List.generate(3, (i) {
-              // Déphasage 120° : vague sinusoïdale continue.
+              // Déphasage 120° : vague continue.
               final wave = math.sin(t - i * (2 * math.pi / 3));
               final lift = (wave + 1) / 2; // 0 → 1
               final dy = -lift * widget.amplitude;
@@ -141,7 +141,7 @@ class TypingBubble extends StatelessWidget {
   }
 }
 
-/// Ligne compacte pour la liste des conversations — points verts uniquement.
+/// Liste des conversations — uniquement les 3 points verts animés.
 class TypingListPreview extends StatelessWidget {
   const TypingListPreview({super.key});
 

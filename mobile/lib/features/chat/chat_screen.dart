@@ -31,6 +31,7 @@ import "package:klambo_messagerie/features/conversations/group_profile_screen.da
 import "package:klambo_messagerie/features/conversations/group_settings_screen.dart";
 import "package:klambo_messagerie/features/parent/parent_hub_screen.dart";
 import "package:klambo_messagerie/features/presence/presence_controller.dart";
+import "package:klambo_messagerie/features/presence/typing_store.dart";
 import "package:klambo_messagerie/widgets/chat_composer.dart";
 import "package:klambo_messagerie/widgets/chat_wallpaper.dart";
 import "package:klambo_messagerie/widgets/connection_sync_bar.dart";
@@ -404,6 +405,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
 
     if (type == "typing") {
+      // convId absent = accepter (filet) ; sinon filtre strict.
       if (convId != null && convId != widget.conversationId) return;
       final uid = event["userId"]?.toString();
       final me = ref.read(sessionProvider).me?["user"];
@@ -448,7 +450,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             (payload is Map ? payload["senderId"]?.toString() : null);
         final me = ref.read(sessionProvider).me?["user"];
         final myId = me is Map ? me["id"]?.toString() : null;
-        if (senderId != null && senderId != myId) _clearPeerTyping();
+        // Message de l'autre → coupe « en train d'écrire » tout de suite.
+        if (senderId == null || senderId != myId) _clearPeerTyping();
         // Appliquer le WS tout de suite ; HTTP seulement pour pièces jointes.
         if (_applyRealtimeCreated(event)) {
           _threadRefresh?.cancel();
@@ -492,13 +495,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final keepFocus = _composerKey.currentState?.hasFocus ?? true;
 
     if (senderId != null && senderId == myId) {
-      final pendingIdx = _messages.lastIndexWhere((m) {
-        if (m is! Map || m["pending"] != true) return false;
-        if (body.isEmpty) return true;
-        return m["body"]?.toString() == body;
-      });
-      if (pendingIdx < 0) {
-        // Pas de pending local : quand même afficher (autre appareil).
+      final confirmed = _confirmPendingMessage(
+        messageId: id,
+        bodyHint: body,
+        senderName: event["senderName"]?.toString(),
+        senderImage: event["senderImage"],
+      );
+      if (!confirmed) {
+        // Autre appareil / pas de pending local.
         setState(() {
           _messages = [
             ..._messages,
@@ -513,17 +517,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             },
           ];
         });
-        _knownMessageIds.add(id);
-        _keepComposerFocus(wasFocused: keepFocus);
-        return true;
       }
-      setState(() {
-        final copy = Map<String, dynamic>.from(_messages[pendingIdx] as Map);
-        copy["id"] = id;
-        copy["pending"] = false;
-        if (body.isNotEmpty) copy["body"] = body;
-        _messages[pendingIdx] = copy;
-      });
       _knownMessageIds.add(id);
       _keepComposerFocus(wasFocused: keepFocus);
       return true;
@@ -553,6 +547,70 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return true;
   }
 
+  /// Remplace un pending local par le message serveur (évite le doublon horloge + ✓✓).
+  bool _confirmPendingMessage({
+    required String messageId,
+    String? clientMessageId,
+    String? bodyHint,
+    String? senderName,
+    Object? senderImage,
+  }) {
+    final pendingIdx = _messages.lastIndexWhere((m) {
+      if (m is! Map || m["pending"] != true) return false;
+      final cid = m["clientMessageId"]?.toString();
+      if (clientMessageId != null &&
+          clientMessageId.isNotEmpty &&
+          cid == clientMessageId) {
+        return true;
+      }
+      if (bodyHint == null || bodyHint.isEmpty) return clientMessageId == null;
+      final localBody = m["body"]?.toString() ?? "";
+      // bodyPreview WS peut être tronqué à 160.
+      return localBody == bodyHint ||
+          localBody.startsWith(bodyHint) ||
+          bodyHint.startsWith(localBody);
+    });
+    if (pendingIdx < 0) return false;
+    if (!mounted) return true;
+    setState(() {
+      final copy = Map<String, dynamic>.from(_messages[pendingIdx] as Map);
+      copy["id"] = messageId;
+      copy["pending"] = false;
+      if (bodyHint != null && bodyHint.isNotEmpty) {
+        final cur = copy["body"]?.toString() ?? "";
+        if (cur.isEmpty || cur.length <= bodyHint.length) {
+          copy["body"] = bodyHint;
+        }
+      }
+      if (senderName != null) copy["senderName"] = senderName;
+      if (senderImage != null) copy["senderImage"] = senderImage;
+      _messages[pendingIdx] = copy;
+    });
+    _knownMessageIds.add(messageId);
+    return true;
+  }
+
+  bool _pendingMatchedByServer(
+    Map<String, dynamic> pending,
+    Iterable<Map<String, dynamic>> serverMsgs,
+  ) {
+    final cid = pending["clientMessageId"]?.toString();
+    final body = pending["body"]?.toString() ?? "";
+    final senderId = pending["senderId"]?.toString();
+    for (final s in serverMsgs) {
+      final scid = s["clientMessageId"]?.toString();
+      if (cid != null && cid.isNotEmpty && scid == cid) return true;
+      if (senderId != null &&
+          senderId.isNotEmpty &&
+          s["senderId"]?.toString() != senderId) {
+        continue;
+      }
+      final sbody = s["body"]?.toString() ?? "";
+      if (body.isNotEmpty && sbody == body) return true;
+    }
+    return false;
+  }
+
   /// Fusionne le fil HTTP avec les messages déjà affichés (pending / WS).
   List<Map<String, dynamic>> _mergeThread(
     List<Map<String, dynamic>> incoming, {
@@ -571,6 +629,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final id = m["id"]?.toString();
       if (id == null || id.isEmpty) continue;
       if (m["pending"] == true) {
+        // Déjà sur le serveur → ne pas garder la bulle « horloge ».
+        if (_pendingMatchedByServer(m, byId.values)) continue;
         byId.putIfAbsent(id, () => m);
         continue;
       }
@@ -663,6 +723,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   void _clearPeerTyping() {
     _typingClear?.cancel();
+    ref.read(typingStoreProvider).clear(widget.conversationId);
     if (!mounted || !_typingPeer) return;
     setState(() => _typingPeer = false);
   }
@@ -671,16 +732,37 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void _onInputChanged() {
     _scheduleDraftSave();
     if (_input.text.trim().isEmpty) return;
+    final hub = ref.read(callHubProvider);
+    // Envoyer même si le handshake « connected » n'est pas encore flaggé.
+    if (hub == null) return;
     final now = DateTime.now();
     if (_typingSentAt != null &&
         now.difference(_typingSentAt!) < const Duration(seconds: 2)) {
       return;
     }
     _typingSentAt = now;
-    ref.read(callHubProvider)?.socket.sendTyping(
-          organizationId: widget.organizationId,
-          conversationId: widget.conversationId,
-        );
+    hub.socket.sendTyping(
+      organizationId: widget.organizationId,
+      conversationId: widget.conversationId,
+    );
+  }
+
+  /// Coupe l'indicateur si un message récent de l'autre apparaît (filet HTTP).
+  void _clearTypingFromThread(List<Map<String, dynamic>> messages) {
+    if (!_typingPeer) return;
+    final me = ref.read(sessionProvider).me?["user"];
+    final myId = me is Map ? me["id"]?.toString() : null;
+    final now = DateTime.now();
+    for (final m in messages) {
+      final senderId = m["senderId"]?.toString();
+      if (senderId == null || senderId == myId) continue;
+      final created = DateTime.tryParse(m["createdAt"]?.toString() ?? "");
+      if (created == null) continue;
+      if (now.difference(created.toLocal()) <= const Duration(seconds: 12)) {
+        _clearPeerTyping();
+        return;
+      }
+    }
   }
 
   Future<void> _bindPresence() async {
@@ -730,14 +812,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   String? _presenceSubtitle(L10n l10n) {
     final peerId = widget.peerUserId;
     if (peerId == null) return null;
-    final hub = ref.read(callHubProvider);
-    // Pas de pastille / « en ligne » si notre WS est coupé.
-    if (hub == null || !hub.socket.isConnected || _presence?.linkUp != true) {
-      return l10n.offline;
-    }
-    final info = _presence?.of(peerId);
+    // Même source que la pastille verte (liste) : PresenceController.isOnline.
+    final presence =
+        _presence ?? ref.read(callHubProvider)?.presence;
+    if (presence == null) return null;
+    if (presence.isOnline(peerId)) return l10n.online;
+
+    final info = presence.of(peerId);
     if (info == null) return null;
-    if (info.online) return l10n.online;
 
     final last = info.lastSeenAt;
     if (last == null) return l10n.offline;
@@ -938,6 +1020,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         final ctype = data["conversationType"]?.toString();
         if (ctype != null && ctype.isNotEmpty) _conversationType = ctype;
       });
+      // Filet : si le message est arrivé par HTTP, coupe quand même « écrit… ».
+      if (!fromCache) _clearTypingFromThread(mapped);
       if (!fromCache) {
         _chimeNewChatMessages(mapped, myId);
         unawaited(
@@ -1568,13 +1652,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     required String? userId,
     String? replyToId,
     Map? replyTo,
+    String? clientMessageId,
   }) {
-    final localId = "local-${const Uuid().v4()}";
+    final localId =
+        clientMessageId != null && clientMessageId.isNotEmpty
+            ? "local-$clientMessageId"
+            : "local-${const Uuid().v4()}";
     setState(() {
       _messages = [
         ..._messages,
         {
           "id": localId,
+          "clientMessageId": clientMessageId,
           "senderId": userId,
           "senderName": "",
           "body": body,
@@ -1599,8 +1688,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     required String body,
     required PendingAttachment att,
     required String? userId,
+    String? clientMessageId,
   }) {
-    final localId = "local-${const Uuid().v4()}";
+    final localId =
+        clientMessageId != null && clientMessageId.isNotEmpty
+            ? "local-$clientMessageId"
+            : "local-${const Uuid().v4()}";
     final attachment = <String, dynamic>{
       "id": localId,
       "kind": att.kind == PendingAttachmentKind.image
@@ -1619,6 +1712,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ..._messages,
         {
           "id": localId,
+          "clientMessageId": clientMessageId,
           "senderId": userId,
           "senderName": "",
           "body": body,
@@ -1647,29 +1741,48 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       _sending = true;
       _sendError = null;
     });
+    // Fin de saisie locale : prochain message pourra re-signaler « typing ».
+    _typingSentAt = null;
     try {
       final repo = ref.read(messagingRepositoryProvider);
       var captionUsed = false;
 
       if (attachments.isEmpty) {
+        final clientMessageId = const Uuid().v4();
         _appendOptimisticText(
           body: text,
           userId: userId,
           replyToId: _replyTo?["id"]?.toString(),
           replyTo: _replyTo,
+          clientMessageId: clientMessageId,
         );
-        await repo.sendMessage(
+        final sent = await repo.sendMessage(
           widget.organizationId,
           widget.conversationId,
           body: text,
           replyToId: _replyTo?["id"]?.toString(),
-          clientMessageId: const Uuid().v4(),
+          clientMessageId: clientMessageId,
         );
+        final mid = sent["messageId"]?.toString() ?? sent["id"]?.toString();
+        if (mid != null && mid.isNotEmpty) {
+          _confirmPendingMessage(
+            messageId: mid,
+            clientMessageId: clientMessageId,
+            bodyHint: text,
+          );
+          ref.read(callHubProvider)?.publishLocalOutgoing(
+                organizationId: widget.organizationId,
+                conversationId: widget.conversationId,
+                messageId: mid,
+                bodyPreview: text,
+              );
+        }
       } else {
         for (var i = 0; i < attachments.length; i++) {
           final att = attachments[i];
           final caption = (!captionUsed && text.isNotEmpty) ? text : "";
           if (caption.isNotEmpty) captionUsed = true;
+          final clientMessageId = const Uuid().v4();
           _appendOptimisticMedia(
             body: caption.isNotEmpty
                 ? caption
@@ -1680,27 +1793,68 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         : "[file]",
             att: att,
             userId: userId,
+            clientMessageId: clientMessageId,
           );
-          await repo.sendMediaMessage(
+          final sent = await repo.sendMediaMessage(
             widget.organizationId,
             widget.conversationId,
             bytes: att.bytes,
             filename: att.filename,
             mimeType: att.mimeType,
             body: caption,
-            clientMessageId: const Uuid().v4(),
+            clientMessageId: clientMessageId,
             durationMs: att.durationMs,
           );
+          final mid = sent["messageId"]?.toString() ?? sent["id"]?.toString();
+          if (mid != null && mid.isNotEmpty) {
+            final preview = caption.isNotEmpty
+                ? caption
+                : att.kind == PendingAttachmentKind.image
+                    ? "[image]"
+                    : att.kind == PendingAttachmentKind.audio
+                        ? "[audio]"
+                        : "[file]";
+            _confirmPendingMessage(
+              messageId: mid,
+              clientMessageId: clientMessageId,
+              bodyHint: caption.isNotEmpty ? caption : null,
+            );
+            ref.read(callHubProvider)?.publishLocalOutgoing(
+                  organizationId: widget.organizationId,
+                  conversationId: widget.conversationId,
+                  messageId: mid,
+                  bodyPreview: preview,
+                );
+          }
         }
         if (text.isNotEmpty && !captionUsed) {
-          _appendOptimisticText(body: text, userId: userId);
-          await repo.sendMessage(
+          final clientMessageId = const Uuid().v4();
+          _appendOptimisticText(
+            body: text,
+            userId: userId,
+            clientMessageId: clientMessageId,
+          );
+          final sent = await repo.sendMessage(
             widget.organizationId,
             widget.conversationId,
             body: text,
             replyToId: _replyTo?["id"]?.toString(),
-            clientMessageId: const Uuid().v4(),
+            clientMessageId: clientMessageId,
           );
+          final mid = sent["messageId"]?.toString() ?? sent["id"]?.toString();
+          if (mid != null && mid.isNotEmpty) {
+            _confirmPendingMessage(
+              messageId: mid,
+              clientMessageId: clientMessageId,
+              bodyHint: text,
+            );
+            ref.read(callHubProvider)?.publishLocalOutgoing(
+                  organizationId: widget.organizationId,
+                  conversationId: widget.conversationId,
+                  messageId: mid,
+                  bodyPreview: text,
+                );
+          }
         }
       }
       if (mounted) setState(() => _replyTo = null);

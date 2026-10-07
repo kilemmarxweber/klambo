@@ -1,3 +1,5 @@
+import "dart:async";
+
 import "package:app_badge_plus/app_badge_plus.dart";
 import "package:dio/dio.dart";
 import "package:flutter/foundation.dart";
@@ -205,8 +207,7 @@ class NotificationService {
     ].join("|");
     final playSound = !silent && AlertPrefs.instance.soundsEnabled;
     final count = badgeCount ?? _unreadBadge;
-    final avatar = await _avatarBytes(avatarUrl);
-
+    // Afficher tout de suite — ne pas bloquer sur le téléchargement d'avatar.
     await _plugin.show(
       id: id,
       title: title,
@@ -219,7 +220,6 @@ class NotificationService {
           importance: Importance.max,
           priority: Priority.max,
           category: AndroidNotificationCategory.message,
-          largeIcon: avatar == null ? null : ByteArrayAndroidBitmap(avatar),
           styleInformation: BigTextStyleInformation(
             body,
             contentTitle: title,
@@ -248,6 +248,52 @@ class NotificationService {
       ),
       payload: payload,
     );
+
+    // Avatar en arrière-plan (rafraîchit la notif si encore visible).
+    if (avatarUrl != null && avatarUrl.isNotEmpty) {
+      unawaited(() async {
+        final avatar = await _avatarBytes(avatarUrl);
+        if (avatar == null) return;
+        if (_messageNotifIds[thread] != id) return;
+        try {
+          await _plugin.show(
+            id: id,
+            title: title,
+            body: body,
+            notificationDetails: NotificationDetails(
+              android: AndroidNotificationDetails(
+                messagesChannelId,
+                "Messages Klambocore",
+                channelDescription: "Nouveaux messages, son du téléphone",
+                importance: Importance.max,
+                priority: Priority.max,
+                category: AndroidNotificationCategory.message,
+                largeIcon: ByteArrayAndroidBitmap(avatar),
+                styleInformation: BigTextStyleInformation(
+                  body,
+                  contentTitle: title,
+                  summaryText: "Klambocore",
+                ),
+                playSound: false,
+                enableVibration: false,
+                number: count > 0 ? count : null,
+                channelShowBadge: true,
+                autoCancel: true,
+                onlyAlertOnce: true,
+              ),
+              iOS: DarwinNotificationDetails(
+                presentAlert: true,
+                presentBadge: true,
+                presentSound: false,
+                badgeNumber: count > 0 ? count : null,
+                threadIdentifier: conversationId,
+              ),
+            ),
+            payload: payload,
+          );
+        } catch (_) {}
+      }());
+    }
   }
 
   Future<void> showIncomingCallNotification({

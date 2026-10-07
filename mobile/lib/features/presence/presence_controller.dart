@@ -25,7 +25,9 @@ class PresenceController extends ChangeNotifier {
   final Map<String, PresenceInfo> _byUser = {};
   String? _organizationId;
   /// Lien WS local : sans ça, personne n'est affichée « en ligne ».
-  bool _linkUp = false;
+  /// Démarre à true pour éviter un flash « hors ligne » avant le 1er connect ;
+  /// [setLinkUp] le coupe dès que le socket tombe.
+  bool _linkUp = true;
 
   String? get organizationId => _organizationId;
 
@@ -46,19 +48,11 @@ class PresenceController extends ChangeNotifier {
   DateTime? lastSeenAt(String userId) => _byUser[userId]?.lastSeenAt;
 
   /// Appelé quand le WebSocket local tombe / revient.
+  /// Ne mute pas le cache : [isOnline] / [of] masquent déjà via [_linkUp],
+  /// pour que les pastilles vertes réapparaissent dès la reconnexion.
   void setLinkUp(bool up) {
     if (_linkUp == up) return;
     _linkUp = up;
-    if (!up) {
-      final now = DateTime.now();
-      for (final entry in _byUser.entries.toList()) {
-        if (!entry.value.online) continue;
-        _byUser[entry.key] = entry.value.copyWith(
-          online: false,
-          lastSeenAt: now,
-        );
-      }
-    }
     notifyListeners();
   }
 

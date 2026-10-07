@@ -1005,9 +1005,6 @@ class _ParentHubScreenState extends ConsumerState<ParentHubScreen> {
                                 _BotStep.askName => Icons.person_outline,
                                 _ => Icons.touch_app_outlined,
                               },
-                              // Périodes bulletin : liste verticale (comme avant).
-                              vertical: _step == _BotStep.askDetail &&
-                                  _topic == "bulletin",
                             ),
                           // Frais / Notes / Bulletin : 3 petits boutons côte à côte.
                           if (_step == _BotStep.idle ||
@@ -1192,14 +1189,12 @@ class _SuggestionStrip extends StatelessWidget {
     required this.onTap,
     required this.isDark,
     required this.icon,
-    this.vertical = false,
   });
 
   final List<String> items;
   final void Function(String) onTap;
   final bool isDark;
   final IconData icon;
-  final bool vertical;
 
   @override
   Widget build(BuildContext context) {
@@ -1209,61 +1204,6 @@ class _SuggestionStrip extends StatelessWidget {
     final border = isDark
         ? EteyeloColors.listDividerDark
         : EteyeloColors.listDivider;
-    final textColor = isDark
-        ? EteyeloColors.bubbleIncomingTextDark
-        : EteyeloColors.bubbleIncomingText;
-
-    // Bulletin / périodes : liste verticale + icône (style d’origine).
-    if (vertical) {
-      return Container(
-        width: double.infinity,
-        decoration: BoxDecoration(
-          color: bar,
-          border: Border(top: BorderSide(color: border)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (var i = 0; i < items.length; i++) ...[
-              if (i > 0) Divider(height: 1, color: border),
-              Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: () => onTap(items[i]),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 11,
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(icon, size: 22, color: EteyeloColors.primary),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            items[i],
-                            style: TextStyle(
-                              fontWeight: FontWeight.w600,
-                              fontSize: 15,
-                              color: textColor,
-                            ),
-                          ),
-                        ),
-                        const Icon(
-                          Icons.chevron_right,
-                          size: 20,
-                          color: EteyeloColors.bubbleMeta,
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ],
-        ),
-      );
-    }
 
     return Container(
       width: double.infinity,

@@ -1,8 +1,8 @@
 /// Liste et fil : une lecture complète, puis l'écoute.
 ///
-/// Le WebSocket porte les messages nouveaux. HTTP ne revient que si le
-/// socket est coupé, et alors seulement pour le delta `since`.
-bool shouldPollInbox({required bool socketConnected}) => !socketConnected;
+/// Même filet que le fil ouvert : le WS peut être « up » sans Redis, donc
+/// sans `message.created`. HTTP `since` rattrape la liste comme le chat.
+bool shouldPollInbox({required bool socketConnected}) => true;
 
 /// Secours HTTP du fil : toujours utile (cache WS raté), plus fréquent si WS down.
 bool shouldPollThread({required bool socketConnected}) => true;
@@ -12,9 +12,13 @@ const threadCatchUpInterval = Duration(seconds: 12);
 
 bool shouldPollPresence({required bool socketConnected}) => !socketConnected;
 
-const inboxFallbackInterval = Duration(seconds: 45);
+/// Aligné sur le fil : aperçu / badge à jour sans attendre 45 s.
+const inboxFallbackInterval = Duration(seconds: 12);
 const threadFallbackInterval = Duration(seconds: 30);
 const presenceFallbackInterval = Duration(seconds: 60);
+
+/// Après ouverture : on ignore un stale serveur « encore non lu » un court instant.
+const locallyReadGrace = Duration(seconds: 12);
 
 /// Rattrapage `since` au retour du lien, pas un second chargement complet.
 bool shouldCatchUpOnLink({required bool inboxPrimed}) => inboxPrimed;
@@ -50,23 +54,35 @@ InboxEventEffect applyInboxEvent({
   final item = Map<String, dynamic>.from(items[index]);
   final at = now.toUtc().toIso8601String();
   final senderId = event["senderId"]?.toString();
+  final newMessageId = event["messageId"]?.toString();
+  final prevLast = item["lastMessage"];
+  final prevMessageId =
+      prevLast is Map ? prevLast["id"]?.toString() : null;
+  // Même event rejoué (WS + publishLocal) → ne pas recompter.
+  final duplicate = newMessageId != null &&
+      newMessageId.isNotEmpty &&
+      newMessageId == prevMessageId;
+
   item["updatedAt"] = at;
   final cipher = event["bodyCipher"]?.toString() ?? "";
   item["lastMessage"] = {
     "id": event["messageId"],
     "body": cipher.startsWith("k1.")
         ? cipher
-        : (event["bodyPreview"]?.toString() ?? ""),
+        : (event["bodyPreview"]?.toString() ??
+            event["body"]?.toString() ??
+            ""),
     "senderId": senderId,
     "senderName": event["senderName"],
+    "senderImage": event["senderImage"],
     "createdAt": at,
   };
   final mine = senderId != null && senderId == myUserId;
   final open = openConversationId != null && openConversationId == convId;
-  if (!mine && !open) {
-    item["unreadCount"] = _unread(item) + 1;
-  } else if (open) {
+  if (open) {
     item["unreadCount"] = 0;
+  } else if (!mine && !duplicate) {
+    item["unreadCount"] = _unread(item) + 1;
   }
   items.removeAt(index);
   items.insert(0, item);
@@ -85,19 +101,97 @@ String? inboxWatermark(List<Map<String, dynamic>> items) {
 
 void mergeInboxItems(
   List<Map<String, dynamic>> current,
-  List<Map<String, dynamic>> incoming,
-) {
+  List<Map<String, dynamic>> incoming, {
+  Map<String, DateTime> locallyReadAt = const {},
+  DateTime? now,
+}) {
+  final clock = now ?? DateTime.now();
   for (final raw in incoming) {
     final id = raw["id"]?.toString();
     if (id == null || id.isEmpty) continue;
-    current.removeWhere((item) => item["id"]?.toString() == id);
-    current.add(Map<String, dynamic>.from(raw));
+    final idx = current.indexWhere((item) => item["id"]?.toString() == id);
+    final server = Map<String, dynamic>.from(raw);
+    if (idx >= 0) {
+      final local = current[idx];
+      server["unreadCount"] = reconcileUnreadCount(
+        local: local,
+        server: server,
+        locallyReadAt: locallyReadAt[id],
+        now: clock,
+      );
+      current.removeAt(idx);
+    }
+    current.add(server);
   }
   current.sort((a, b) {
     final aAt = a["updatedAt"]?.toString() ?? "";
     final bAt = b["updatedAt"]?.toString() ?? "";
     return bAt.compareTo(aAt);
   });
+}
+
+/// Préserve le non-lu au refresh : on ne remet jamais à 0 sans ouverture.
+///
+/// - WS en avance sur le GET → garde le max local
+/// - GET plus haut → prend le serveur
+/// - Grace courte après ouverture seulement
+int reconcileUnreadCount({
+  required Map<String, dynamic> local,
+  required Map<String, dynamic> server,
+  DateTime? locallyReadAt,
+  DateTime? now,
+}) {
+  final localUnread = _unread(local);
+  final serverUnread = _unread(server);
+  final localLast = local["lastMessage"];
+  final serverLast = server["lastMessage"];
+  final localLastId =
+      localLast is Map ? localLast["id"]?.toString() : null;
+  final serverLastId =
+      serverLast is Map ? serverLast["id"]?.toString() : null;
+  final clock = now ?? DateTime.now();
+
+  if (locallyReadAt != null &&
+      clock.difference(locallyReadAt) < locallyReadGrace &&
+      localLastId != null &&
+      localLastId.isNotEmpty &&
+      localLastId == serverLastId) {
+    return 0;
+  }
+
+  // Refresh / poll : toujours le plus haut des deux (jamais perdre le badge).
+  return localUnread > serverUnread ? localUnread : serverUnread;
+}
+
+/// Applique [reconcileUnreadCount] sur une liste serveur vs l'état local.
+void preserveUnreadOnRefresh({
+  required List<Map<String, dynamic>> incoming,
+  required List<Map<String, dynamic>> previous,
+  Map<String, DateTime> locallyReadAt = const {},
+  DateTime? now,
+}) {
+  if (previous.isEmpty) return;
+  final byId = <String, Map<String, dynamic>>{};
+  for (final item in previous) {
+    final id = item["id"]?.toString();
+    if (id == null || id.isEmpty) continue;
+    byId[id] = item;
+  }
+  final clock = now ?? DateTime.now();
+  for (var i = 0; i < incoming.length; i++) {
+    final id = incoming[i]["id"]?.toString();
+    if (id == null) continue;
+    final local = byId[id];
+    if (local == null) continue;
+    final copy = Map<String, dynamic>.from(incoming[i]);
+    copy["unreadCount"] = reconcileUnreadCount(
+      local: local,
+      server: copy,
+      locallyReadAt: locallyReadAt[id],
+      now: clock,
+    );
+    incoming[i] = Map<String, dynamic>.from(copy);
+  }
 }
 
 int _unread(Map<String, dynamic> item) {
