@@ -53,6 +53,37 @@ a=fingerprint:sha-256 aa:bb:cc
     );
   });
 
+  test("vérifie la signature même si le SDP local n'a pas encore d'empreinte",
+      () async {
+    final pair = await CallDtls.keyPairFromSeed(List<int>.filled(32, 7));
+    const sdp = "a=fingerprint:sha-256 AB:CD\r\n";
+    final proof = await CallDtls.signSdp(keyPair: pair, sdp: sdp);
+    expect(
+      await CallDtls.verifySdp(
+        sdp: "v=0\r\n",
+        proof: proof,
+        trustedPublicKey: proof.publicKey,
+      ),
+      isTrue,
+    );
+  });
+
+  test("accepte la même clé avec padding base64 différent", () async {
+    final pair = await CallDtls.keyPairFromSeed(List<int>.filled(32, 3));
+    const sdp = "a=fingerprint:sha-256 DE:AD\r\n";
+    final proof = await CallDtls.signSdp(keyPair: pair, sdp: sdp);
+    final raw = base64Decode(proof.publicKey);
+    final noPad = base64Encode(raw).replaceAll("=", "");
+    expect(
+      await CallDtls.verifySdp(
+        sdp: sdp,
+        proof: proof,
+        trustedPublicKey: noPad,
+      ),
+      isTrue,
+    );
+  });
+
   test("vecteur Ed25519 RFC 8032 (message vide)", () async {
     final seed = _hex(
       "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",

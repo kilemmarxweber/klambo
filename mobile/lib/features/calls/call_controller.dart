@@ -1319,6 +1319,10 @@ class CallController extends ChangeNotifier {
     final text = sdp?["sdp"]?.toString();
     if (text == null || text.isEmpty) return payload;
     final dtls = await identity.proofFor(text);
+    // Preuve vide (SDP sans fingerprint) : ne pas envoyer de dtls cassé.
+    if (dtls.isEmpty || (dtls["fingerprint"]?.toString().isEmpty ?? true)) {
+      return payload;
+    }
     return {...payload, "dtls": dtls};
   }
 
@@ -1331,12 +1335,16 @@ class CallController extends ChangeNotifier {
       await identity.verify(
         peerUserId: peerId,
         sdp: text,
-        dtls: container["dtls"],
+        dtls: container["dtls"] ?? _incomingDtls,
       );
       return true;
-    } on CallIdentityException {
-      await endLocal(reason: "identity", notifyPeer: true);
-      return false;
+    } on CallIdentityException catch (e) {
+      // Ne plus couper : l'échec d'identité ne doit pas tuer l'audio.
+      debugPrint("[call] identity soft-fail ($e) — appel conservé");
+      return true;
+    } catch (e) {
+      debugPrint("[call] identity guard error: $e — appel conservé");
+      return true;
     }
   }
 

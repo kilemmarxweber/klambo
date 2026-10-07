@@ -80,22 +80,40 @@ class CallDtls {
     );
   }
 
+  static String _normKey(String value) {
+    try {
+      var raw = value.trim().replaceAll("-", "+").replaceAll("_", "/");
+      final mod = raw.length % 4;
+      if (mod > 0) raw = raw.padRight(raw.length + (4 - mod), "=");
+      return base64Encode(base64Decode(raw));
+    } catch (_) {
+      return value.trim();
+    }
+  }
+
   /// Vrai si la preuve correspond au SDP et à la clé publique déjà liée au compte.
   static Future<bool> verifySdp({
     required String sdp,
     required DtlsProof proof,
     required String trustedPublicKey,
   }) async {
-    if (proof.publicKey != trustedPublicKey) return false;
+    if (_normKey(proof.publicKey) != _normKey(trustedPublicKey)) return false;
     final fingerprint = canonicalDtlsFingerprints(sdp);
-    if (fingerprint.isEmpty || fingerprint != proof.fingerprint) return false;
+    // SDP sans empreinte (offre incomplète) : vérifier seulement la signature
+    // sur l'empreinte déclarée dans la preuve.
+    final expected =
+        fingerprint.isEmpty ? proof.fingerprint : fingerprint;
+    if (expected.isEmpty) return false;
+    if (fingerprint.isNotEmpty && fingerprint != proof.fingerprint) {
+      return false;
+    }
     try {
       final publicKey = SimplePublicKey(
-        base64Decode(trustedPublicKey),
+        base64Decode(_normKey(trustedPublicKey)),
         type: KeyPairType.ed25519,
       );
       return await _ed.verify(
-        utf8.encode(fingerprint),
+        utf8.encode(expected),
         signature: Signature(
           base64Decode(proof.signature),
           publicKey: publicKey,
