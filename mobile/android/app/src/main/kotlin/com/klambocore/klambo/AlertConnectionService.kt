@@ -908,9 +908,8 @@ class AlertConnectionService : Service() {
             .setVisibility(Notification.VISIBILITY_SECRET)
             .setShowWhen(false)
             .setOnlyAlertOnce(true)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            builder.setSilent(true)
-        }
+            // Canal IMPORTANCE_MIN : pas de son/vibration (setSilent absent selon SDK).
+            .setSound(null)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
         }
