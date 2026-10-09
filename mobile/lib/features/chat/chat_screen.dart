@@ -15,6 +15,7 @@ import "package:klambo_messagerie/core/format_time.dart";
 import "package:klambo_messagerie/core/gallery_save.dart";
 import "package:klambo_messagerie/core/l10n.dart";
 import "package:klambo_messagerie/core/media_urls.dart";
+import "package:klambo_messagerie/core/notification_service.dart";
 import "package:klambo_messagerie/core/notify_trace.dart";
 import "package:klambo_messagerie/core/person_name.dart";
 import "package:klambo_messagerie/core/phone_number.dart";
@@ -68,6 +69,19 @@ MessageDeliveryStatus messageDeliveryStatus(
       msg["isRead"] == true) {
     return MessageDeliveryStatus.read;
   }
+
+  // Watermark de lecture avant « délivré » : UNREAD ne doit pas bloquer le bleu.
+  final createdRaw = msg["createdAt"]?.toString();
+  final created = createdRaw == null ? null : DateTime.tryParse(createdRaw);
+  if (peerLastReadAt != null && created != null) {
+    final createdUtc = created.toUtc();
+    final readUtc = peerLastReadAt.toUtc();
+    // Lu si le peer a ouvert le fil à l'instant du message ou après.
+    if (!createdUtc.isAfter(readUtc)) {
+      return MessageDeliveryStatus.read;
+    }
+  }
+
   if (apiStatus == "DELIVERED" ||
       apiStatus == "RECEIVED" ||
       apiStatus == "UNREAD" ||
@@ -86,21 +100,6 @@ MessageDeliveryStatus messageDeliveryStatus(
       apiStatus == "QUEUED") {
     return MessageDeliveryStatus.pending;
   }
-  if (apiStatus == "SENT") {
-    // L'API peut dire SENT alors qu'on a un watermark local plus récent.
-  }
-
-  final createdRaw = msg["createdAt"]?.toString();
-  final created = createdRaw == null ? null : DateTime.tryParse(createdRaw);
-  if (peerLastReadAt != null && created != null) {
-    final createdUtc = created.toUtc();
-    final readUtc = peerLastReadAt.toUtc();
-    // Lu si le peer a ouvert le fil à l'instant du message ou après.
-    if (!createdUtc.isAfter(readUtc)) {
-      return MessageDeliveryStatus.read;
-    }
-  }
-  if (apiStatus == "SENT") return MessageDeliveryStatus.sent;
   return MessageDeliveryStatus.sent;
 }
 
@@ -373,6 +372,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _activeConvCtrl = ref.read(activeConversationIdProvider.notifier);
       _activeConvCtrl!.state = widget.conversationId;
+      // Ouvrir le fil = plus « nouveau » : retire la notif du thread.
+      unawaited(
+        NotificationService.instance
+            .cancelConversationNotifications(widget.conversationId),
+      );
       unawaited(_restoreDraft());
       _load(silent: false);
       _bindPresence();
@@ -466,17 +470,38 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
       }
       if (reason == "read" &&
-          readAtRaw != null &&
           readerId != null &&
           readerId != myId) {
-        final parsed = DateTime.tryParse(readAtRaw)?.toUtc();
+        final parsed = readAtRaw != null
+            ? DateTime.tryParse(readAtRaw)?.toUtc()
+            : DateTime.now().toUtc();
         if (parsed != null) {
           setState(() {
             final current = _peerLastReadAt;
             if (current == null || parsed.isAfter(current)) {
               _peerLastReadAt = parsed;
             }
+            // Coches bleues immédiates sur mes messages déjà délivrés.
+            for (var i = 0; i < _messages.length; i++) {
+              final raw = _messages[i];
+              if (raw is! Map) continue;
+              if (raw["senderId"]?.toString() != myId) continue;
+              final created =
+                  DateTime.tryParse(raw["createdAt"]?.toString() ?? "");
+              if (created != null && created.toUtc().isAfter(parsed)) {
+                continue;
+              }
+              final status =
+                  raw["deliveryStatus"]?.toString().trim().toUpperCase();
+              if (status == "READ") continue;
+              final updated = Map<String, dynamic>.from(raw);
+              updated["deliveryStatus"] = "READ";
+              _messages[i] = updated;
+            }
           });
+        }
+        for (final messageId in messageIds) {
+          _setMessageDeliveryStatus(messageId, "READ");
         }
       }
       if (eventStatus != null) {
@@ -548,7 +573,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final raw = _messages[index];
     if (raw is! Map) return;
     final current = raw["deliveryStatus"]?.toString().trim().toUpperCase();
-    if (current == "READ" || current == normalizedStatus) return;
+    final currentRank = _deliveryStatusRank(current);
+    final nextRank = _deliveryStatusRank(normalizedStatus);
+    if (currentRank >= nextRank && currentRank > 0) return;
     setState(() {
       final updated = Map<String, dynamic>.from(raw);
       updated["deliveryStatus"] = normalizedStatus;
@@ -604,10 +631,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     final senderId = event["senderId"]?.toString() ??
         (payload is Map ? payload["senderId"]?.toString() : null);
-    final body = event["bodyPreview"]?.toString() ??
-        event["body"]?.toString() ??
+    // Préférer body complet (__CALL__:) : bodyPreview peut être tronqué.
+    final body = event["body"]?.toString() ??
         (payload is Map ? payload["body"]?.toString() : null) ??
+        event["bodyPreview"]?.toString() ??
+        (payload is Map ? payload["bodyPreview"]?.toString() : null) ??
         "";
+    final callTrace = CallTraceInfo.tryParse(body);
+    if (callTrace?.callId != null && callTrace!.callId!.isNotEmpty) {
+      for (final m in _messages) {
+        if (m is! Map) continue;
+        final existing = CallTraceInfo.tryParse(m["body"]?.toString());
+        if (existing?.callId == callTrace.callId) {
+          _knownMessageIds.add(id);
+          return true;
+        }
+      }
+    }
     final me = ref.read(sessionProvider).me?["user"];
     final myId = me is Map ? me["id"]?.toString() : null;
     final keepFocus = _composerKey.currentState?.hasFocus ?? true;
@@ -620,7 +660,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         senderImage: event["senderImage"],
       );
       if (!confirmed) {
-        // Autre appareil / pas de pending local.
+        // Autre appareil / bulle appel locale / pas de pending.
         setState(() {
           _messages = [
             ..._messages,
@@ -630,10 +670,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               "senderName": event["senderName"]?.toString() ?? "",
               "senderImage": event["senderImage"],
               "body": body,
-              "createdAt": DateTime.now().toUtc().toIso8601String(),
+              "createdAt": event["createdAt"]?.toString() ??
+                  DateTime.now().toUtc().toIso8601String(),
               "attachments": const [],
             },
           ];
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _scrollToBottom(force: true, animated: true);
         });
       }
       _knownMessageIds.add(id);

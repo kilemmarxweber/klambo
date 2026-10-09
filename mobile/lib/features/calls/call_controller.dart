@@ -4,6 +4,7 @@ import "dart:convert";
 import "package:crypto/crypto.dart";
 import "package:flutter/foundation.dart";
 import "package:flutter_webrtc/flutter_webrtc.dart";
+import "package:klambo_messagerie/core/call_trace.dart";
 import "package:klambo_messagerie/core/data_saver_prefs.dart";
 import "package:klambo_messagerie/data/calls_repository.dart";
 import "package:klambo_messagerie/data/messaging_socket.dart";
@@ -53,6 +54,8 @@ class CallController extends ChangeNotifier {
   final CallIdentity? _identity;
   final String localUserId;
   void Function(ActiveCall call)? onIncomingRing;
+  /// Bulle chat immédiate (reçu / manqué / raccroché) avant cleanup.
+  void Function(ActiveCall call, CallTraceInfo trace)? onCallEnded;
 
   CallPhase phase = CallPhase.idle;
   ActiveCall? active;
@@ -471,6 +474,11 @@ class CallController extends ChangeNotifier {
         _giveUpTimer = null;
         _stopConnectBudget();
         _restartRequestSent = false;
+        // Pendant ringingIn/Out le préchauffage ICE ne doit jamais ouvrir
+        // l'écran « direct » avant accept / answer.
+        if (phase == CallPhase.ringingIn || phase == CallPhase.ringingOut) {
+          break;
+        }
         if (phase != CallPhase.active) {
           phase = CallPhase.active;
           _stopRingTimeout();
@@ -1520,10 +1528,37 @@ class CallController extends ChangeNotifier {
     if (_ending || _disposed) return;
     if (phase == CallPhase.idle && active == null) return;
     final call = active;
+    final phaseBefore = phase;
+    final elapsedMs = callElapsed.inMilliseconds;
+    final wasAnswered = phaseBefore == CallPhase.active ||
+        (phaseBefore == CallPhase.connecting && elapsedMs >= 1500);
     _stopOfferResend();
     _stopRingTimeout();
     _cancelLinkTimers();
     _ending = true;
+
+    // Trace chat avant cleanup — visible immédiatement dans le fil.
+    if (call != null &&
+        reason != "failed" &&
+        reason != "media_unavailable" &&
+        reason != "start_failed" &&
+        reason != "identity" &&
+        reason != "missing_offer") {
+      try {
+        final trace = CallTraceInfo.fromCallEnd(
+          kind: call.kind,
+          isCaller: call.isCaller,
+          wasAnswered: wasAnswered,
+          reason: reason,
+          durationMs: wasAnswered ? elapsedMs : 0,
+          callId: call.callId,
+        );
+        onCallEnded?.call(call, trace);
+      } catch (e) {
+        debugPrint("[call] onCallEnded: $e");
+      }
+    }
+
     if (notifyPeer && call != null) {
       try {
         _socket.sendCallSignal(

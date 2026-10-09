@@ -35,7 +35,21 @@ class NotificationService {
   final Map<String, int> _messageNotifIds = {};
   DateTime? _localBadgeBumpAt;
   AppLifecycleState _lifecycle = AppLifecycleState.resumed;
-  NotificationTapCallback? onTap;
+  NotificationTapCallback? _onTap;
+  /// Payload en attente (cold start ou tap avant que l'UI soit branchée).
+  String? _pendingTapPayload;
+
+  set onTap(NotificationTapCallback? callback) {
+    _onTap = callback;
+    final pending = _pendingTapPayload;
+    if (callback != null && pending != null) {
+      _pendingTapPayload = null;
+      // Différer pour laisser ConversationsScreen finir son init.
+      scheduleMicrotask(() => callback(pending));
+    }
+  }
+
+  NotificationTapCallback? get onTap => _onTap;
 
   bool get isBackground =>
       _lifecycle == AppLifecycleState.paused ||
@@ -67,12 +81,51 @@ class NotificationService {
     await _plugin.initialize(
       settings: initSettings,
       onDidReceiveNotificationResponse: (response) {
-        onTap?.call(response.payload);
+        _dispatchTap(response.payload);
       },
     );
 
+    try {
+      final launch = await _plugin.getNotificationAppLaunchDetails();
+      if (launch?.didNotificationLaunchApp == true) {
+        final payload = launch!.notificationResponse?.payload;
+        if (payload != null && payload.isNotEmpty) {
+          _pendingTapPayload = payload;
+        }
+      }
+    } catch (e) {
+      debugPrint("[notif] launch details failed: $e");
+    }
+
     await _ensureAndroidChannels();
     _ready = true;
+  }
+
+  void _dispatchTap(String? payload) {
+    if (payload == null || payload.isEmpty) return;
+    final cb = _onTap;
+    if (cb != null) {
+      cb(payload);
+    } else {
+      _pendingTapPayload = payload;
+    }
+  }
+
+  /// Consomme le payload cold-start / tap en attente (une seule fois).
+  String? consumePendingTap() {
+    final payload = _pendingTapPayload;
+    _pendingTapPayload = null;
+    return payload;
+  }
+
+  /// Annule la notif message de ce fil + rafraîchit le badge launcher.
+  Future<void> cancelConversationNotifications(String? conversationId) async {
+    if (!_ready || kIsWeb) return;
+    if (conversationId == null || conversationId.isEmpty) return;
+    final id = _messageNotifIds.remove(conversationId);
+    if (id != null) {
+      await _plugin.cancel(id: id);
+    }
   }
 
   Future<void> _ensureAndroidChannels() async {

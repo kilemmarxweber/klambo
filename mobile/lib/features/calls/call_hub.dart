@@ -114,6 +114,7 @@ class CallHub {
       unawaited(_alertIncomingCall());
       showCallScreen();
     };
+    controller.onCallEnded = _publishCallTrace;
     socket.onMessageEvent = _onMessageEvent;
     socket.onPresenceEvent = presence.applyEvent;
     socket.onConnected = () {
@@ -210,6 +211,8 @@ class CallHub {
   final _messageController =
       StreamController<Map<String, dynamic>>.broadcast();
   final Set<String> _alertedMessageKeys = {};
+  /// Une bulle `__CALL__` par callId (évite doublon hangup local + peer).
+  final Set<String> _publishedCallTraces = {};
   Stream<Map<String, dynamic>> get messageEvents => _messageController.stream;
 
   Future<void> _heartbeat(String organizationId) {
@@ -558,6 +561,41 @@ class CallHub {
       "bodyPreview": bodyPreview,
       if (senderName != null) "senderName": senderName,
     });
+  }
+
+  /// Bulle d'appel (reçu / manqué / raccroché) dès la fin — comme un message.
+  void _publishCallTrace(ActiveCall call, CallTraceInfo trace) {
+    final conversationId = call.conversationId?.trim();
+    if (conversationId == null || conversationId.isEmpty) {
+      debugPrint("[hub] call trace sans conversationId — ignorée");
+      return;
+    }
+    final callId = call.callId.trim();
+    final dedupe = callId.isNotEmpty ? callId : "$conversationId|${trace.toBody()}";
+    if (!_publishedCallTraces.add(dedupe)) return;
+    if (_publishedCallTraces.length > 200) {
+      _publishedCallTraces.remove(_publishedCallTraces.first);
+    }
+
+    final body = trace.toBody();
+    final messageId =
+        callId.isNotEmpty ? "calltrace-$callId" : "calltrace-${DateTime.now().millisecondsSinceEpoch}";
+    // Appelant → bulle à droite ; sinon (manqué entrant / refus) → côté peer.
+    final senderId = call.isCaller ? localUserId : call.peerUserId;
+    rememberIncomingMessage(messageId);
+    if (_messageController.isClosed) return;
+    _messageController.add({
+      "type": "message.created",
+      "organizationId": call.organizationId,
+      "conversationId": conversationId,
+      "messageId": messageId,
+      "senderId": senderId,
+      "body": body,
+      "bodyPreview": body,
+      "createdAt": DateTime.now().toUtc().toIso8601String(),
+      if (call.peerName != null && !call.isCaller) "senderName": call.peerName,
+    });
+    debugPrint("[hub] call trace → chat: ${trace.label}");
   }
 
   /// Son (et notif si on n'est pas dans le fil) pour un message reçu.

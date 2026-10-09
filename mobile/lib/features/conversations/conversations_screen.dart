@@ -67,6 +67,8 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
   /// Ouverture récente → grace courte ; un refresh ne doit pas effacer le non-lu.
   final Map<String, DateTime> _locallyReadAt = {};
   bool _narrowChatPushing = false;
+  bool _handlingNotifTap = false;
+  String? _queuedNotifPayload;
 
   @override
   void didChangeDependencies() {
@@ -126,6 +128,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
   @override
   void initState() {
     super.initState();
+    NotificationService.instance.onTap = _onNotificationTap;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _bindPresence();
       _load();
@@ -146,7 +149,95 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
         if (!mounted || hub?.socket.isConnected == true) return;
         unawaited(_refreshPresenceSnapshot());
       });
+      final pending = NotificationService.instance.consumePendingTap();
+      if (pending != null) _onNotificationTap(pending);
     });
+  }
+
+  void _onNotificationTap(String? payload) {
+    if (payload == null || payload.isEmpty) return;
+    if (_handlingNotifTap) {
+      _queuedNotifPayload = payload;
+      return;
+    }
+    unawaited(_openFromNotification(payload));
+  }
+
+  Future<void> _openFromNotification(String payload) async {
+    if (!mounted) return;
+    _handlingNotifTap = true;
+    try {
+      final parts = payload.split("|");
+      final kind = parts.isNotEmpty ? parts[0] : "";
+      if (kind == "call") {
+        await NotificationService.instance.cancelIncomingCallNotification();
+        ref.read(callHubProvider)?.showCallScreen();
+        return;
+      }
+      if (kind != "message") return;
+
+      final orgId = parts.length > 1 ? parts[1].trim() : "";
+      final convId = parts.length > 2 ? parts[2].trim() : "";
+      if (convId.isEmpty) return;
+
+      await NotificationService.instance.cancelConversationNotifications(convId);
+
+      Map<String, dynamic>? item;
+      for (final candidate in _items) {
+        if (candidate["id"]?.toString() == convId) {
+          item = candidate;
+          break;
+        }
+      }
+      if (item == null) {
+        await _load(silent: true);
+        for (final candidate in _items) {
+          if (candidate["id"]?.toString() == convId) {
+            item = candidate;
+            break;
+          }
+        }
+      }
+
+      final session = ref.read(sessionProvider);
+      final resolvedOrg = orgId.isNotEmpty
+          ? orgId
+          : (item?["organizationId"]?.toString() ?? session.activeOrgId);
+      if (resolvedOrg == null || resolvedOrg.isEmpty) return;
+
+      // Déjà dans ce fil → marque lu + badge, sans re-push.
+      final activeId = ref.read(activeConversationIdProvider);
+      if (activeId == convId) {
+        _markConversationReadLocally(convId);
+        return;
+      }
+
+      if (!mounted) return;
+      // Si un autre fil est déjà ouvert en plein écran, revenir à la liste.
+      final nav = navigatorKey.currentState;
+      if (nav != null && nav.canPop()) {
+        nav.popUntil((route) => route.isFirst);
+        await Future<void>.delayed(const Duration(milliseconds: 16));
+      }
+      if (!mounted) return;
+
+      await _openChat(
+        item ??
+            <String, dynamic>{
+              "id": convId,
+              "organizationId": resolvedOrg,
+              "title": "Conversation",
+              "unreadCount": 0,
+            },
+      );
+    } finally {
+      _handlingNotifTap = false;
+      final queued = _queuedNotifPayload;
+      _queuedNotifPayload = null;
+      if (queued != null && mounted) {
+        _onNotificationTap(queued);
+      }
+    }
   }
 
   void _bindHubEvents() {
@@ -161,6 +252,7 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
 
   @override
   void dispose() {
+    NotificationService.instance.onTap = null;
     _presence?.removeListener(_onPresenceChanged);
     _hubEventsSub?.cancel();
     _hubSub?.close();
@@ -741,6 +833,9 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
   void _markConversationReadLocally(String conversationId) {
     if (conversationId.isEmpty) return;
     _locallyReadAt[conversationId] = DateTime.now();
+    unawaited(
+      NotificationService.instance.cancelConversationNotifications(conversationId),
+    );
     final index =
         _items.indexWhere((item) => item["id"]?.toString() == conversationId);
     if (index < 0) {

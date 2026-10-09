@@ -7,12 +7,16 @@ class CallTraceInfo {
     required this.status,
     this.endReason,
     this.durationMs = 0,
+    this.callId,
   });
 
   final String kind;
   final String status;
   final String? endReason;
   final int durationMs;
+  final String? callId;
+
+  static const bodyPrefix = "__CALL__:";
 
   bool get isVideo => kind.toUpperCase() == "VIDEO";
 
@@ -60,19 +64,85 @@ class CallTraceInfo {
       endReason == "missed" ||
       endReason == "cancelled";
 
+  /// Sérialise pour insertion immédiate dans le fil.
+  String toBody() {
+    final map = <String, dynamic>{
+      "kind": kind,
+      "status": status,
+      "durationMs": durationMs,
+    };
+    if (endReason != null) map["endReason"] = endReason;
+    if (callId != null && callId!.isNotEmpty) map["callId"] = callId;
+    return "$bodyPrefix${jsonEncode(map)}";
+  }
+
+  /// Mappe la fin d'appel locale → statut affiché (reçu / manqué / raccroché).
+  static CallTraceInfo fromCallEnd({
+    required String kind,
+    required bool isCaller,
+    required bool wasAnswered,
+    required String? reason,
+    required int durationMs,
+    String? callId,
+  }) {
+    final r = (reason ?? "")
+        .trim()
+        .toLowerCase()
+        .replaceFirst(RegExp(r"^call\."), "");
+    final safeDuration = durationMs < 0 ? 0 : durationMs;
+
+    if (r == "rejected" || r == "reject" || r == "busy") {
+      return CallTraceInfo(
+        kind: kind,
+        status: "REJECTED",
+        endReason: r == "busy" ? "busy" : "rejected",
+        durationMs: 0,
+        callId: callId,
+      );
+    }
+
+    if (!wasAnswered || safeDuration <= 0) {
+      // Pas de conversation média : manqué / annulé.
+      if (isCaller && (r == "hangup" || r == "cancelled")) {
+        return CallTraceInfo(
+          kind: kind,
+          status: "ENDED",
+          endReason: "cancelled",
+          durationMs: 0,
+          callId: callId,
+        );
+      }
+      return CallTraceInfo(
+        kind: kind,
+        status: "MISSED",
+        endReason: "missed",
+        durationMs: 0,
+        callId: callId,
+      );
+    }
+
+    return CallTraceInfo(
+      kind: kind,
+      status: "ENDED",
+      endReason: r.isEmpty ? "hangup" : r,
+      durationMs: safeDuration,
+      callId: callId,
+    );
+  }
+
   static CallTraceInfo? tryParse(String? body) {
     if (body == null) return null;
     final trimmed = body.trim();
-    const prefix = "__CALL__:";
-    if (!trimmed.startsWith(prefix)) return null;
+    if (!trimmed.startsWith(bodyPrefix)) return null;
     try {
-      final raw = jsonDecode(trimmed.substring(prefix.length));
+      final raw = jsonDecode(trimmed.substring(bodyPrefix.length));
       if (raw is! Map) return null;
       return CallTraceInfo(
         kind: raw["kind"]?.toString() ?? "AUDIO",
         status: raw["status"]?.toString() ?? "ENDED",
         endReason: raw["endReason"]?.toString(),
         durationMs: (raw["durationMs"] as num?)?.toInt() ?? 0,
+        callId: raw["callId"]?.toString(),
       );
     } catch (_) {
       return null;
