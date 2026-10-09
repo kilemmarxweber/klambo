@@ -377,7 +377,12 @@ class _FullScreenImageState extends State<_FullScreenImage> {
   }
 
   void _onVerticalDragEnd(DragEndDetails details) {
-    if (_zoomed) return;
+    // Zoom pendant le drag : ne pas fermer, mais annuler le décalage
+    // sinon l'image reste décalée pendant le pan zoomé.
+    if (_zoomed) {
+      if (_dragY != 0) setState(() => _dragY = 0);
+      return;
+    }
     final velocity = details.primaryVelocity ?? 0;
     if (_dragY.abs() > 90 || velocity.abs() > 650) {
       _close();
