@@ -144,7 +144,7 @@ class _ContactProfileScreenState extends ConsumerState<ContactProfileScreen> {
     Navigator.of(context).push(
       PageRouteBuilder<void>(
         opaque: false,
-        barrierColor: Colors.black.withValues(alpha: 0.92),
+        barrierColor: Colors.transparent,
         pageBuilder: (_, __, ___) =>
             _FullScreenImage(url: url, name: _nomLabel.isEmpty ? _prenomLabel : _nomLabel),
         transitionsBuilder: (_, anim, __, child) =>
@@ -349,35 +349,94 @@ class _InfoTile extends StatelessWidget {
   }
 }
 
-class _FullScreenImage extends StatelessWidget {
+class _FullScreenImage extends StatefulWidget {
   const _FullScreenImage({required this.url, required this.name});
 
   final String url;
   final String name;
 
   @override
+  State<_FullScreenImage> createState() => _FullScreenImageState();
+}
+
+class _FullScreenImageState extends State<_FullScreenImage> {
+  final _transform = TransformationController();
+  double _dragY = 0;
+
+  bool get _zoomed => _transform.value.getMaxScaleOnAxis() > 1.05;
+
+  void _close() {
+    if (!mounted) return;
+    final nav = Navigator.of(context);
+    if (nav.canPop()) nav.pop();
+  }
+
+  void _onVerticalDragUpdate(DragUpdateDetails details) {
+    if (_zoomed) return;
+    setState(() => _dragY += details.delta.dy);
+  }
+
+  void _onVerticalDragEnd(DragEndDetails details) {
+    if (_zoomed) return;
+    final velocity = details.primaryVelocity ?? 0;
+    if (_dragY.abs() > 90 || velocity.abs() > 650) {
+      _close();
+      return;
+    }
+    setState(() => _dragY = 0);
+  }
+
+  @override
+  void dispose() {
+    _transform.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final progress = (_dragY.abs() / 280).clamp(0.0, 1.0);
+    final bgAlpha = 0.92 * (1 - progress);
+
     return Scaffold(
-      backgroundColor: Colors.transparent,
+      backgroundColor: Colors.black.withValues(alpha: bgAlpha),
       body: SafeArea(
         child: Stack(
           children: [
-            Center(
-              child: InteractiveViewer(
-                minScale: 0.8,
-                maxScale: 4,
-                child: Hero(
-                  tag: "contact-avatar-$name",
-                  child: CachedNetworkImage(
-                    imageUrl: url,
-                    fit: BoxFit.contain,
-                    placeholder: (_, __) => const CircularProgressIndicator(
-                      color: Colors.white,
-                    ),
-                    errorWidget: (_, __, ___) => const Icon(
-                      Icons.broken_image_outlined,
-                      color: Colors.white70,
-                      size: 64,
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onVerticalDragUpdate: _onVerticalDragUpdate,
+              onVerticalDragEnd: _onVerticalDragEnd,
+              onTap: _zoomed ? null : _close,
+              child: Center(
+                child: Transform.translate(
+                  offset: Offset(0, _dragY),
+                  child: Opacity(
+                    opacity: (1 - progress * 0.45).clamp(0.35, 1.0),
+                    child: InteractiveViewer(
+                      transformationController: _transform,
+                      // À l’échelle 1, le pan vertical ferme ; zoomé = naviguer.
+                      panEnabled: _zoomed,
+                      minScale: 0.8,
+                      maxScale: 4,
+                      onInteractionEnd: (_) {
+                        if (mounted) setState(() {});
+                      },
+                      child: Hero(
+                        tag: "contact-avatar-${widget.name}",
+                        child: CachedNetworkImage(
+                          imageUrl: widget.url,
+                          fit: BoxFit.contain,
+                          placeholder: (_, __) =>
+                              const CircularProgressIndicator(
+                            color: Colors.white,
+                          ),
+                          errorWidget: (_, __, ___) => const Icon(
+                            Icons.broken_image_outlined,
+                            color: Colors.white70,
+                            size: 64,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -386,22 +445,28 @@ class _FullScreenImage extends StatelessWidget {
             Positioned(
               top: 8,
               left: 8,
-              child: IconButton(
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.close, color: Colors.white, size: 28),
+              child: Opacity(
+                opacity: (1 - progress).clamp(0.0, 1.0),
+                child: IconButton(
+                  onPressed: _close,
+                  icon: const Icon(Icons.close, color: Colors.white, size: 28),
+                ),
               ),
             ),
             Positioned(
               bottom: 24,
               left: 24,
               right: 24,
-              child: Text(
-                name,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
+              child: Opacity(
+                opacity: (1 - progress).clamp(0.0, 1.0),
+                child: Text(
+                  widget.name,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
             ),
