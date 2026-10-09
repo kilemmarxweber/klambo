@@ -465,8 +465,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final messageIds = _eventMessageIds(event, update);
       final eventStatus = _eventDeliveryStatus(event, update);
       if (reason == "delivered" || reason == "received") {
-        for (final messageId in messageIds) {
-          _setMessageDeliveryStatus(messageId, "DELIVERED");
+        if (messageIds.isEmpty) {
+          // Serveur sans liste d'ids → tout ce qui est encore « envoyé ».
+          _markMineDelivered();
+        } else {
+          for (final messageId in messageIds) {
+            _setMessageDeliveryStatus(messageId, "DELIVERED");
+          }
         }
       }
       if (reason == "read" &&
@@ -518,11 +523,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         type == "message.read") {
       if (convId != null && convId != widget.conversationId) return;
       final messageIds = _eventMessageIds(event, payload);
-      for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
-        _setMessageDeliveryStatus(
-          messageId,
-          type == "message.read" ? "READ" : "DELIVERED",
-        );
+      if (type == "message.read") {
+        for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
+          _setMessageDeliveryStatus(messageId, "READ");
+        }
+      } else if (messageIds.isEmpty) {
+        _markMineDelivered();
+      } else {
+        for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
+          _setMessageDeliveryStatus(messageId, "DELIVERED");
+        }
       }
       return;
     }
@@ -550,8 +560,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         if (senderId == null || senderId != myId) _clearPeerTyping();
         // Appliquer le WS tout de suite ; HTTP seulement pour pièces jointes.
         if (_applyRealtimeCreated(event)) {
+          final body = event["body"]?.toString() ??
+              event["bodyPreview"]?.toString() ??
+              "";
+          // Appels : rattrapage HTTP rapide (comme texte), pas 4 s.
+          final delay = CallTraceInfo.tryParse(body) != null
+              ? const Duration(milliseconds: 250)
+              : const Duration(seconds: 4);
           _threadRefresh?.cancel();
-          _threadRefresh = Timer(const Duration(seconds: 4), () {
+          _threadRefresh = Timer(delay, () {
             if (mounted) unawaited(_load(silent: true));
           });
           return;
@@ -565,23 +582,79 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _setMessageDeliveryStatus(String messageId, String status) {
-    if (!mounted) return;
+    if (!mounted || messageId.isEmpty) return;
     final normalizedStatus = status.trim().toUpperCase();
-    final index = _messages.indexWhere(
-      (raw) => raw is Map && raw["id"]?.toString() == messageId,
-    );
+    final index = _messages.indexWhere((raw) {
+      if (raw is! Map) return false;
+      if (raw["id"]?.toString() == messageId) return true;
+      // Filet : ack peut arriver avec clientMessageId.
+      return raw["clientMessageId"]?.toString() == messageId;
+    });
     if (index < 0) return;
     final raw = _messages[index];
     if (raw is! Map) return;
     final current = raw["deliveryStatus"]?.toString().trim().toUpperCase();
     final currentRank = _deliveryStatusRank(current);
     final nextRank = _deliveryStatusRank(normalizedStatus);
-    if (currentRank >= nextRank && currentRank > 0) return;
+    if (nextRank <= 0) return;
+    if (currentRank >= nextRank) return;
     setState(() {
       final updated = Map<String, dynamic>.from(raw);
       updated["deliveryStatus"] = normalizedStatus;
       _messages[index] = updated;
     });
+  }
+
+  /// Statut après envoi : peer en ligne → ✓✓ gris tout de suite.
+  String _resolveSendDeliveryStatus(Map<String, dynamic> sent) {
+    final raw = (sent["deliveryStatus"] ?? sent["status"])
+        ?.toString()
+        .trim()
+        .toUpperCase();
+    if (raw == "READ" || raw == "SEEN") return "READ";
+    if (raw == "DELIVERED" ||
+        raw == "RECEIVED" ||
+        raw == "UNREAD" ||
+        raw == "NOT_READ") {
+      return "DELIVERED";
+    }
+    final peerId = widget.peerUserId;
+    final online = peerId != null &&
+        (_presence?.isOnline(peerId) == true ||
+            ref.read(callHubProvider)?.presence.isOnline(peerId) == true);
+    if (online) return "DELIVERED";
+    if (raw == "SENT" || raw == "PENDING" || raw == "QUEUED") return raw!;
+    return online ? "DELIVERED" : "SENT";
+  }
+
+  /// Tous mes messages encore « envoyés » → ✓✓ gris (peer a reçu).
+  void _markMineDelivered() {
+    if (!mounted) return;
+    final me = ref.read(sessionProvider).me?["user"];
+    final myId = me is Map ? me["id"]?.toString() : null;
+    if (myId == null) return;
+    var changed = false;
+    final next = <dynamic>[];
+    for (final raw in _messages) {
+      if (raw is! Map) {
+        next.add(raw);
+        continue;
+      }
+      if (raw["senderId"]?.toString() != myId || raw["pending"] == true) {
+        next.add(raw);
+        continue;
+      }
+      final rank = _deliveryStatusRank(raw["deliveryStatus"]);
+      if (rank >= 2) {
+        next.add(raw);
+        continue;
+      }
+      final updated = Map<String, dynamic>.from(raw);
+      updated["deliveryStatus"] = "DELIVERED";
+      next.add(updated);
+      changed = true;
+    }
+    if (changed) setState(() => _messages = next);
   }
 
   Set<String> _eventMessageIds(Object? primary, [Object? secondary]) {
@@ -639,15 +712,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         (payload is Map ? payload["bodyPreview"]?.toString() : null) ??
         "";
     final callTrace = CallTraceInfo.tryParse(body);
-    if (callTrace?.callId != null && callTrace!.callId!.isNotEmpty) {
-      for (final m in _messages) {
-        if (m is! Map) continue;
-        final existing = CallTraceInfo.tryParse(m["body"]?.toString());
-        if (existing?.callId == callTrace.callId) {
-          _knownMessageIds.add(id);
-          return true;
-        }
-      }
+    if (callTrace != null &&
+        _absorbDuplicateCallTrace(
+          messageId: id,
+          body: body,
+          trace: callTrace,
+          createdAt: event["createdAt"]?.toString(),
+        )) {
+      _knownMessageIds.add(id);
+      return true;
     }
     final me = ref.read(sessionProvider).me?["user"];
     final myId = me is Map ? me["id"]?.toString() : null;
@@ -674,12 +747,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               "createdAt": event["createdAt"]?.toString() ??
                   DateTime.now().toUtc().toIso8601String(),
               "attachments": const [],
+              // Echo WS = déjà chez le peer (sinon pending local).
+              if (callTrace == null) "deliveryStatus": "DELIVERED",
             },
           ];
         });
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) _scrollToBottom(force: true, animated: true);
         });
+      } else if (callTrace == null) {
+        // Confirmation serveur pendant que le peer est dans le fil.
+        _setMessageDeliveryStatus(id, "DELIVERED");
       }
       _knownMessageIds.add(id);
       _keepComposerFocus(wasFocused: keepFocus);
@@ -708,6 +786,61 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     });
     _keepComposerFocus(wasFocused: keepFocus);
     return true;
+  }
+
+  /// Fusionne une 2ᵉ bulle `__CALL__` (serveur) avec la locale `calltrace-*`.
+  bool _absorbDuplicateCallTrace({
+    required String messageId,
+    required String body,
+    required CallTraceInfo trace,
+    String? createdAt,
+  }) {
+    final created = DateTime.tryParse(createdAt ?? "")?.toUtc();
+    for (var i = 0; i < _messages.length; i++) {
+      final raw = _messages[i];
+      if (raw is! Map) continue;
+      final existingId = raw["id"]?.toString() ?? "";
+      final existing = CallTraceInfo.tryParse(raw["body"]?.toString());
+      if (existing == null) continue;
+
+      final sameCallId = trace.callId != null &&
+          trace.callId!.isNotEmpty &&
+          existing.callId == trace.callId;
+      final localOrIncoming = existingId.startsWith("calltrace-") ||
+          messageId.startsWith("calltrace-");
+      final sameShape = existing.kind.toUpperCase() == trace.kind.toUpperCase() &&
+          existing.status.toUpperCase() == trace.status.toUpperCase() &&
+          (existing.durationMs - trace.durationMs).abs() < 2500;
+      var recentEnough = true;
+      if (created != null) {
+        final prev = DateTime.tryParse(raw["createdAt"]?.toString() ?? "");
+        if (prev != null) {
+          recentEnough =
+              created.difference(prev.toUtc()).abs() < const Duration(minutes: 3);
+        }
+      }
+      if (!sameCallId && !(localOrIncoming && sameShape && recentEnough)) {
+        continue;
+      }
+
+      // Garde l'id serveur (pas calltrace-*) et le body le plus riche.
+      setState(() {
+        final updated = Map<String, dynamic>.from(raw);
+        if (!messageId.startsWith("calltrace-")) {
+          updated["id"] = messageId;
+        }
+        final preferBody = (trace.callId != null && trace.callId!.isNotEmpty) ||
+            !existingId.startsWith("calltrace-");
+        if (preferBody || (updated["body"]?.toString() ?? "").isEmpty) {
+          updated["body"] = body;
+        }
+        _messages[i] = updated;
+      });
+      _knownMessageIds.add(messageId);
+      if (existingId.isNotEmpty) _knownMessageIds.add(existingId);
+      return true;
+    }
+    return false;
   }
 
   /// Remplace un pending local par le message serveur (évite le doublon horloge + ✓✓).
@@ -741,7 +874,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       copy["id"] = messageId;
       copy["pending"] = false;
       if (deliveryStatus != null && deliveryStatus.isNotEmpty) {
-        copy["deliveryStatus"] = deliveryStatus;
+        final normalized = deliveryStatus.trim().toUpperCase();
+        copy["deliveryStatus"] = switch (normalized) {
+          "READ" || "SEEN" => "READ",
+          "DELIVERED" ||
+          "RECEIVED" ||
+          "UNREAD" ||
+          "NOT_READ" =>
+            "DELIVERED",
+          "PENDING" || "SENDING" || "QUEUED" => "SENT",
+          _ => normalized,
+        };
+      } else {
+        copy["deliveryStatus"] = "SENT";
       }
       if (bodyHint != null && bodyHint.isNotEmpty) {
         final cur = copy["body"]?.toString() ?? "";
@@ -783,7 +928,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     List<Map<String, dynamic>> incoming, {
     required bool fromCache,
   }) {
-    if (_messages.isEmpty) return incoming;
+    if (_messages.isEmpty) return _dedupeCallTraces(incoming);
     final byId = <String, Map<String, dynamic>>{};
     for (final m in incoming) {
       final id = m["id"]?.toString();
@@ -799,6 +944,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         // Déjà sur le serveur → ne pas garder la bulle « horloge ».
         if (_pendingMatchedByServer(m, byId.values)) continue;
         byId.putIfAbsent(id, () => m);
+        continue;
+      }
+      // Local calltrace-* déjà représenté par un __CALL__ serveur.
+      if (id.startsWith("calltrace-") &&
+          _serverHasMatchingCallTrace(m, byId.values)) {
         continue;
       }
       // Cache ou réponse incomplète : ne pas perdre un message déjà à l'écran.
@@ -828,7 +978,59 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           DateTime.fromMillisecondsSinceEpoch(0);
       return ta.compareTo(tb);
     });
-    return list;
+    return _dedupeCallTraces(list);
+  }
+
+  bool _serverHasMatchingCallTrace(
+    Map<String, dynamic> local,
+    Iterable<Map<String, dynamic>> serverMsgs,
+  ) {
+    final localTrace = CallTraceInfo.tryParse(local["body"]?.toString());
+    if (localTrace == null) return false;
+    final localAt = DateTime.tryParse(local["createdAt"]?.toString() ?? "");
+    for (final s in serverMsgs) {
+      final sid = s["id"]?.toString() ?? "";
+      if (sid.startsWith("calltrace-")) continue;
+      final st = CallTraceInfo.tryParse(s["body"]?.toString());
+      if (st == null) continue;
+      if (localTrace.callId != null &&
+          localTrace.callId!.isNotEmpty &&
+          st.callId == localTrace.callId) {
+        return true;
+      }
+      if (st.kind.toUpperCase() != localTrace.kind.toUpperCase()) continue;
+      if (st.status.toUpperCase() != localTrace.status.toUpperCase()) continue;
+      final sat = DateTime.tryParse(s["createdAt"]?.toString() ?? "");
+      if (localAt != null &&
+          sat != null &&
+          localAt.toUtc().difference(sat.toUtc()).abs() >
+              const Duration(minutes: 3)) {
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /// Une seule carte par appel (évite calltrace + message serveur).
+  List<Map<String, dynamic>> _dedupeCallTraces(
+    List<Map<String, dynamic>> messages,
+  ) {
+    final out = <Map<String, dynamic>>[];
+    final seenCallIds = <String>{};
+    for (final m in messages.reversed) {
+      final trace = CallTraceInfo.tryParse(m["body"]?.toString());
+      if (trace == null) {
+        out.add(m);
+        continue;
+      }
+      final key = (trace.callId != null && trace.callId!.isNotEmpty)
+          ? "id:${trace.callId}"
+          : "shape:${trace.kind}|${trace.status}|${trace.durationMs ~/ 1000}";
+      if (!seenCallIds.add(key)) continue;
+      out.add(m);
+    }
+    return out.reversed.toList();
   }
 
   int _deliveryStatusRank(Object? value) {
@@ -1985,8 +2187,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             messageId: mid,
             clientMessageId: clientMessageId,
             bodyHint: text,
-            deliveryStatus: sent["deliveryStatus"]?.toString() ??
-                sent["status"]?.toString(),
+            deliveryStatus: _resolveSendDeliveryStatus(sent),
           );
           ref.read(callHubProvider)?.publishLocalOutgoing(
                 organizationId: widget.organizationId,
@@ -2036,8 +2237,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               messageId: mid,
               clientMessageId: clientMessageId,
               bodyHint: caption.isNotEmpty ? caption : null,
-              deliveryStatus: sent["deliveryStatus"]?.toString() ??
-                  sent["status"]?.toString(),
+              deliveryStatus: _resolveSendDeliveryStatus(sent),
             );
             ref.read(callHubProvider)?.publishLocalOutgoing(
                   organizationId: widget.organizationId,
@@ -2067,8 +2267,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               messageId: mid,
               clientMessageId: clientMessageId,
               bodyHint: text,
-              deliveryStatus: sent["deliveryStatus"]?.toString() ??
-                  sent["status"]?.toString(),
+              deliveryStatus: _resolveSendDeliveryStatus(sent),
             );
             ref.read(callHubProvider)?.publishLocalOutgoing(
                   organizationId: widget.organizationId,
@@ -2081,7 +2280,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       }
       if (mounted) setState(() => _replyTo = null);
       unawaited(_clearDraft());
-      await _load(silent: true);
+      // Pas de _load bloquant : le fil est déjà à jour (optimiste + WS).
+      // Rattrapage discret comme pour les messages entrants.
+      _threadRefresh?.cancel();
+      _threadRefresh = Timer(const Duration(milliseconds: 400), () {
+        if (mounted) unawaited(_load(silent: true));
+      });
     } catch (e) {
       setState(() => _sendError = l10n.sendFailed);
     } finally {
