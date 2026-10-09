@@ -470,11 +470,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
       }
       if (reason == "read" &&
+          readAtRaw != null &&
+          readAtRaw.isNotEmpty &&
           readerId != null &&
           readerId != myId) {
-        final parsed = readAtRaw != null
-            ? DateTime.tryParse(readAtRaw)?.toUtc()
-            : DateTime.now().toUtc();
+        // Horodatage peer obligatoire — pas de DateTime.now() (watermark faux).
+        final parsed = DateTime.tryParse(readAtRaw)?.toUtc();
         if (parsed != null) {
           setState(() {
             final current = _peerLastReadAt;
@@ -499,9 +500,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               _messages[i] = updated;
             }
           });
-        }
-        for (final messageId in messageIds) {
-          _setMessageDeliveryStatus(messageId, "READ");
+          for (final messageId in messageIds) {
+            _setMessageDeliveryStatus(messageId, "READ");
+          }
         }
       }
       if (eventStatus != null) {

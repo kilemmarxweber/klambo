@@ -24,7 +24,7 @@ class NotificationService {
 
   static const messagesChannelId = "klambo_messages_v8";
   static const callsChannelId = "klambo_calls_v6";
-  static const badgeChannelId = "klambo_badge_v3";
+  static const badgeChannelId = "klambo_badge_v4";
 
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
@@ -36,16 +36,20 @@ class NotificationService {
   DateTime? _localBadgeBumpAt;
   AppLifecycleState _lifecycle = AppLifecycleState.resumed;
   NotificationTapCallback? _onTap;
-  /// Payload en attente (cold start ou tap avant que l'UI soit branchée).
-  String? _pendingTapPayload;
+  /// Payloads en attente (cold start / taps avant que l'UI soit branchée).
+  final List<String> _pendingTapPayloads = [];
 
   set onTap(NotificationTapCallback? callback) {
     _onTap = callback;
-    final pending = _pendingTapPayload;
-    if (callback != null && pending != null) {
-      _pendingTapPayload = null;
+    if (callback != null && _pendingTapPayloads.isNotEmpty) {
+      final pending = List<String>.from(_pendingTapPayloads);
+      _pendingTapPayloads.clear();
       // Différer pour laisser ConversationsScreen finir son init.
-      scheduleMicrotask(() => callback(pending));
+      scheduleMicrotask(() {
+        for (final payload in pending) {
+          callback(payload);
+        }
+      });
     }
   }
 
@@ -89,9 +93,7 @@ class NotificationService {
       final launch = await _plugin.getNotificationAppLaunchDetails();
       if (launch?.didNotificationLaunchApp == true) {
         final payload = launch!.notificationResponse?.payload;
-        if (payload != null && payload.isNotEmpty) {
-          _pendingTapPayload = payload;
-        }
+        _enqueuePendingTap(payload);
       }
     } catch (e) {
       debugPrint("[notif] launch details failed: $e");
@@ -101,21 +103,28 @@ class NotificationService {
     _ready = true;
   }
 
+  void _enqueuePendingTap(String? payload) {
+    if (payload == null || payload.isEmpty) return;
+    // FIFO : ne pas écraser un tap plus ancien (cold start / taps rapides).
+    if (!_pendingTapPayloads.contains(payload)) {
+      _pendingTapPayloads.add(payload);
+    }
+  }
+
   void _dispatchTap(String? payload) {
     if (payload == null || payload.isEmpty) return;
     final cb = _onTap;
     if (cb != null) {
       cb(payload);
     } else {
-      _pendingTapPayload = payload;
+      _enqueuePendingTap(payload);
     }
   }
 
-  /// Consomme le payload cold-start / tap en attente (une seule fois).
+  /// Consomme le prochain payload cold-start / tap en attente (FIFO).
   String? consumePendingTap() {
-    final payload = _pendingTapPayload;
-    _pendingTapPayload = null;
-    return payload;
+    if (_pendingTapPayloads.isEmpty) return null;
+    return _pendingTapPayloads.removeAt(0);
   }
 
   /// Annule la notif message de ce fil + rafraîchit le badge launcher.
@@ -162,8 +171,8 @@ class NotificationService {
       const AndroidNotificationChannel(
         badgeChannelId,
         "Badge non lus",
-        description: "Compteur de messages non lus",
-        importance: Importance.low,
+        description: "Compteur de messages non lus (silencieux)",
+        importance: Importance.min,
         playSound: false,
         enableVibration: false,
         showBadge: true,
@@ -437,40 +446,25 @@ class NotificationService {
 
     if (!_ready) return;
     try {
-      if (_unreadBadge <= 0) {
-        await _plugin.cancel(id: 900002);
-        return;
+      // Retire l'ancienne notif fixe Android (« X messages non lus »).
+      await _plugin.cancel(id: 900002);
+      if (_unreadBadge <= 0) return;
+      // iOS : badge icône sans alerte. Android : AppBadgePlus seulement.
+      if (_isIOS) {
+        await _plugin.show(
+          id: 900002,
+          title: "",
+          body: "",
+          notificationDetails: NotificationDetails(
+            iOS: DarwinNotificationDetails(
+              presentAlert: false,
+              presentSound: false,
+              presentBadge: true,
+              badgeNumber: _unreadBadge,
+            ),
+          ),
+        );
       }
-      await _plugin.show(
-        id: 900002,
-        title: "Klambo",
-        body: _unreadBadge == 1
-            ? "1 message non lu"
-            : "$_unreadBadge messages non lus",
-        notificationDetails: NotificationDetails(
-          android: AndroidNotificationDetails(
-            badgeChannelId,
-            "Badge non lus",
-            channelDescription: "Compteur de messages non lus",
-            importance: Importance.low,
-            priority: Priority.low,
-            playSound: false,
-            enableVibration: false,
-            number: _unreadBadge,
-            channelShowBadge: true,
-            ongoing: true,
-            autoCancel: false,
-            onlyAlertOnce: true,
-            silent: true,
-          ),
-          iOS: DarwinNotificationDetails(
-            presentAlert: false,
-            presentSound: false,
-            presentBadge: true,
-            badgeNumber: _unreadBadge,
-          ),
-        ),
-      );
     } catch (e) {
       debugPrint("[badge] silent notif failed: $e");
     }

@@ -63,6 +63,7 @@ class AlertConnectionService : Service() {
     private var reconnect: Runnable? = null
     private var wakeRenew: Runnable? = null
     private var watchdog: Runnable? = null
+    private var presenceBeat: Runnable? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val messageNotifIds = HashMap<String, Int>()
     private var messageSeq = 3000
@@ -138,6 +139,8 @@ class AlertConnectionService : Service() {
         reconnect?.let { mainHandler.removeCallbacks(it) }
         wakeRenew?.let { mainHandler.removeCallbacks(it) }
         watchdog?.let { mainHandler.removeCallbacks(it) }
+        presenceBeat?.let { mainHandler.removeCallbacks(it) }
+        presenceBeat = null
         ringTimeout?.let { mainHandler.removeCallbacks(it) }
         unregisterNetworkCallback()
         stopRing()
@@ -199,6 +202,8 @@ class AlertConnectionService : Service() {
         acquireWakeLock()
         scheduleWakeRenew()
         scheduleWatchdog()
+        schedulePresenceHeartbeat()
+        postPresenceHeartbeat()
         registerNetworkCallback()
     }
 
@@ -318,6 +323,13 @@ class AlertConnectionService : Service() {
                 if (gen == generation) {
                     attempt = 0
                     acquireWakeLock()
+                    // En ligne même app fermée / écran verrouillé.
+                    postPresenceHeartbeat()
+                    schedulePresenceHeartbeat()
+                    try {
+                        webSocket.send("""{"type":"ping"}""")
+                    } catch (_: Exception) {
+                    }
                 }
             }
 
@@ -422,6 +434,9 @@ class AlertConnectionService : Service() {
                 payload?.optString("body").orEmpty()
             }
         }.ifBlank { "Nouveau message" }
+        // Traces d'appel locales / techniques : pas de notif utilisateur.
+        if (body.trim().startsWith("__CALL__:")) return
+        if (body.contains("Prêt à recevoir", ignoreCase = true)) return
         val thread = event.optString("conversationId").ifBlank { title }
         val manager = getSystemService(NotificationManager::class.java)
         messageNotifIds[thread]?.let { manager.cancel(it) }
@@ -865,6 +880,10 @@ class AlertConnectionService : Service() {
         manager.notify(id, builder.build())
     }
 
+    /**
+     * Notif FGS obligatoire Android — canal MIN + silencieuse.
+     * Pas de texte « Prêt à recevoir… » (ne doit pas polluer le tiroir).
+     */
     private fun ongoingNotification(): Notification {
         val launch = PendingIntent.getActivity(
             this,
@@ -878,15 +897,66 @@ class AlertConnectionService : Service() {
             @Suppress("DEPRECATION")
             Notification.Builder(this)
         }
-        return builder
+        // Titre/texte vides (espace) : Android exige une notif FGS, pas un message visible.
+        builder
             .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentTitle("Klambo")
-            .setContentText("Prêt à recevoir les appels")
+            .setContentTitle("\u200B")
+            .setContentText("\u200B")
             .setOngoing(true)
             .setContentIntent(launch)
             .setCategory(Notification.CATEGORY_SERVICE)
             .setVisibility(Notification.VISIBILITY_SECRET)
+            .setShowWhen(false)
+            .setOnlyAlertOnce(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            builder.setSilent(true)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            @Suppress("DEPRECATION")
+            builder.setPriority(Notification.PRIORITY_MIN)
+        }
+        return builder.build()
+    }
+
+    /** Heartbeat présence HTTP — reste « en ligne » hors UI Flutter. */
+    private fun schedulePresenceHeartbeat() {
+        presenceBeat?.let { mainHandler.removeCallbacks(it) }
+        if (stopped) return
+        val task = Runnable {
+            if (stopped) return@Runnable
+            postPresenceHeartbeat()
+            // Ping WS pour garder le socket vivant sous Doze.
+            try {
+                socket?.send("""{"type":"ping"}""")
+            } catch (_: Exception) {
+            }
+            schedulePresenceHeartbeat()
+        }
+        presenceBeat = task
+        mainHandler.postDelayed(task, 25_000L)
+    }
+
+    private fun postPresenceHeartbeat() {
+        val orgId = activeOrganizationId() ?: return
+        val token = prefs().getString("flutter.klambo_auth_token", null) ?: return
+        val url = "${apiBase()}/api/mobile/v1/organizations/$orgId/presence"
+        val body = "{}".toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer $token")
+            .post(body)
             .build()
+        client.newCall(request).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                android.util.Log.d("klambo", "presence beat failed: ${e.message}")
+            }
+            override fun onResponse(call: okhttp3.Call, response: Response) {
+                response.close()
+            }
+        })
     }
 
     private fun resolveImage(src: String?): String? {
@@ -974,12 +1044,21 @@ class AlertConnectionService : Service() {
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             },
         )
+        // Nouveau canal MIN : l'ancien v1 (LOW) restait visible dans le tiroir.
+        try {
+            manager.deleteNotificationChannel("klambo_presence_v1")
+        } catch (_: Exception) {
+        }
         manager.createNotificationChannel(
-            NotificationChannel(PRESENCE_CHANNEL, "Connexion Klambocore", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Maintient les alertes en arrière-plan"
+            NotificationChannel(PRESENCE_CHANNEL, "Service Klambo", NotificationManager.IMPORTANCE_MIN).apply {
+                description = "Écoute technique (non visible)"
                 setSound(null, null)
                 enableVibration(false)
                 setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_SECRET
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    setAllowBubbles(false)
+                }
             },
         )
     }
@@ -998,7 +1077,7 @@ class AlertConnectionService : Service() {
         private const val CALL_NOTIF_ID = 900001
         private const val PENDING_CALL_KEY = "flutter.klambo_pending_call"
         private const val CALL_CHANNEL = "klambo_calls_bg_v2"
-        private const val PRESENCE_CHANNEL = "klambo_presence_v1"
+        private const val PRESENCE_CHANNEL = "klambo_presence_silent_v3"
 
         fun wsUrl(baseRaw: String, token: String): String {
             val cleaned = baseRaw.trim().trimEnd('/')

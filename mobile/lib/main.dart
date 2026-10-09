@@ -78,40 +78,53 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     NotificationService.instance.setLifecycle(state);
     final hub = ref.read(callHubProvider);
-    // Retour premier plan / sortie d'arrière-plan : reconnecte le WS
-    // pour recevoir messages + appels dès que l'app n'est plus gelée.
+    // Verrouillé / arrière-plan : le service natif garde l'écoute WS + présence.
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.inactive) {
+      unawaited(BackgroundAlerts.touch());
+      unawaited(BackgroundAlerts.ensureAlive());
+      if (hub != null &&
+          (hub.controller.phase == CallPhase.connecting ||
+              hub.controller.phase == CallPhase.active)) {
+        final peer = hub.controller.active?.peerName?.trim();
+        unawaited(
+          BackgroundAlerts.setCallOngoing(
+            name: (peer != null && peer.isNotEmpty) ? peer : "Klambo",
+            video: hub.controller.active?.kind == "VIDEO",
+          ),
+        );
+      } else if (hub != null) {
+        // Dernier heartbeat Flutter avant gel — le service natif prend le relais.
+        final orgId = hub.presence.organizationId;
+        if (orgId != null && orgId.isNotEmpty) {
+          unawaited(hub.touchPresence());
+        }
+      }
+    }
     if (state == AppLifecycleState.resumed) {
       unawaited(BackgroundAlerts.touch());
-    }
-    if ((state == AppLifecycleState.paused ||
-            state == AppLifecycleState.hidden) &&
-        hub != null &&
-        (hub.controller.phase == CallPhase.connecting ||
-            hub.controller.phase == CallPhase.active)) {
-      final peer = hub.controller.active?.peerName?.trim();
-      unawaited(
-        BackgroundAlerts.setCallOngoing(
-          name: (peer != null && peer.isNotEmpty) ? peer : "Klambo",
-          video: hub.controller.active?.kind == "VIDEO",
-        ),
-      );
-    }
-    if (state == AppLifecycleState.resumed && hub != null) {
-      unawaited(hub.consumeNativeCall());
-      if (!hub.socket.isConnected) {
-        hub.socket.reconnectNow();
-      }
-      final orgId = hub.presence.organizationId;
-      if (orgId != null && orgId.isNotEmpty) {
-        unawaited(hub.refreshPeerPresence(
-          organizationId: orgId,
-          userId: hub.localUserId,
-        ));
+      unawaited(BackgroundAlerts.ensureAlive());
+      if (hub != null) {
+        unawaited(hub.consumeNativeCall());
+        if (!hub.socket.isConnected) {
+          hub.socket.reconnectNow();
+        }
+        final orgId = hub.presence.organizationId;
+        if (orgId != null && orgId.isNotEmpty) {
+          unawaited(hub.touchPresence());
+          unawaited(hub.refreshPeerPresence(
+            organizationId: orgId,
+            userId: hub.localUserId,
+          ));
+        }
       }
     }
     // Uniquement kill process / detach — pas `hidden` (Chrome le tire souvent
     // et coupait l'appel + disposait le media en plein ring).
     if (state == AppLifecycleState.detached) {
+      // Ne coupe PAS le service Android : il doit continuer à écouter.
+      unawaited(BackgroundAlerts.ensureAlive());
       if (hub != null) {
         unawaited(hub.onAppClosing());
       }

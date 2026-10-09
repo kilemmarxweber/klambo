@@ -4,8 +4,11 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.WindowManager
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -87,6 +90,9 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     "pushToken" -> result.success(null)
+                    "prepareIncomingCalls" -> {
+                        result.success(requestBatteryExemption())
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -100,6 +106,31 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+    }
+
+    /** Sans exemption batterie, Doze coupe le WS verrouillé / app fermée. */
+    private fun requestBatteryExemption(): Boolean {
+        return try {
+            val pm = getSystemService(PowerManager::class.java) ?: return false
+            if (pm.isIgnoringBatteryOptimizations(packageName)) return true
+            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                data = Uri.parse("package:$packageName")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            true
+        } catch (_: Exception) {
+            try {
+                startActivity(
+                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    },
+                )
+                true
+            } catch (_: Exception) {
+                false
+            }
+        }
     }
 
     /** Sonnerie par défaut du téléphone (réglages Android), en boucle. */

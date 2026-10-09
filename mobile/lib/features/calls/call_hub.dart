@@ -123,6 +123,8 @@ class CallHub {
       _emitLink("link.up");
       _scheduleCallFallback();
       unawaited(controller.prefetchIceServers());
+      // Service natif en parallèle : écoute si Flutter se fige.
+      unawaited(BackgroundAlerts.ensureAlive());
       final orgId = presence.organizationId ?? initialOrganizationId;
       if (orgId != null && orgId.isNotEmpty) {
         socket.subscribePresence(orgId);
@@ -217,6 +219,17 @@ class CallHub {
 
   Future<void> _heartbeat(String organizationId) {
     return _messaging.presenceHeartbeat(organizationId);
+  }
+
+  /// Heartbeat présence (arrière-plan / verrouillage) pour rester « en ligne ».
+  Future<void> touchPresence() async {
+    final orgId = presence.organizationId;
+    if (orgId == null || orgId.isEmpty) return;
+    try {
+      await _heartbeat(orgId);
+    } catch (e) {
+      debugPrint("[hub] touchPresence: $e");
+    }
   }
 
   void _bindCallKit() {

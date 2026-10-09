@@ -146,4 +146,14 @@ class BackgroundAlerts {
       debugPrint("[bg] ensureAlive: $e");
     }
   }
+
+  /// Demande batterie non-optimisée (Doze coupe sinon l'écoute verrouillée).
+  static Future<void> requestBatteryExemption() async {
+    if (!_android) return;
+    try {
+      await _channel.invokeMethod<bool>("prepareIncomingCalls");
+    } catch (e) {
+      debugPrint("[bg] battery: $e");
+    }
+  }
 }
