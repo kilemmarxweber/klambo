@@ -1634,8 +1634,16 @@ class CallController extends ChangeNotifier {
     final type = event["type"]?.toString() ?? "";
     final callId = event["callId"]?.toString();
 
-    if (type == "call.offer" && event["toUserId"]?.toString() == localUserId) {
-      if (event["fromUserId"]?.toString() == localUserId) return;
+    if (type == "call.offer") {
+      final from = event["fromUserId"]?.toString();
+      if (from == localUserId) return;
+      final to = event["toUserId"]?.toString();
+      // Accepter si toUserId absent (broadcast ciblé) ou égal à moi.
+      final forMe = to == null ||
+          to.isEmpty ||
+          to == "null" ||
+          to == localUserId;
+      if (!forMe) return;
       await handleIncomingOffer(event);
       return;
     }

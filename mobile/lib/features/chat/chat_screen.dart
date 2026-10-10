@@ -434,6 +434,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (type == "link.up" || type == "link.down" || type == "sync.resume") {
       if (mounted) setState(() {});
       if (type == "link.up" || type == "sync.resume") {
+        // Rattrapage HTTP : messages stockés pendant BG / kill (WS ou FCM).
         unawaited(_bindPresence());
         unawaited(_load(silent: true));
       }
@@ -468,8 +469,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final messageIds = _eventMessageIds(event, update);
       final eventStatus = _eventDeliveryStatus(event, update);
       if (reason == "delivered" || reason == "received") {
-        for (final messageId in messageIds) {
-          _setMessageDeliveryStatus(messageId, "DELIVERED");
+        if (messageIds.isEmpty) {
+          // delivered/received sans ids → tous mes SENT (B actif a ack).
+          _markMineDelivered();
+        } else {
+          for (final messageId in messageIds) {
+            _setMessageDeliveryStatus(messageId, "DELIVERED");
+          }
         }
       }
       if (reason == "read" &&
@@ -521,11 +527,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         type == "message.read") {
       if (convId != null && convId != widget.conversationId) return;
       final messageIds = _eventMessageIds(event, payload);
-      for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
-        _setMessageDeliveryStatus(
-          messageId,
-          type == "message.read" ? "READ" : "DELIVERED",
-        );
+      if (type == "message.read") {
+        for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
+          _setMessageDeliveryStatus(messageId, "READ");
+        }
+      } else if (messageIds.isEmpty) {
+        // delivered/received sans ids → tous mes SENT (B actif a ack).
+        _markMineDelivered();
+      } else {
+        for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
+          _setMessageDeliveryStatus(messageId, "DELIVERED");
+        }
       }
       return;
     }
@@ -553,10 +565,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         if (senderId == null || senderId != myId) _clearPeerTyping();
         // Appliquer le WS tout de suite ; HTTP seulement pour pièces jointes.
         if (_applyRealtimeCreated(event)) {
-          _threadRefresh?.cancel();
-          _threadRefresh = Timer(const Duration(seconds: 4), () {
-            if (mounted) unawaited(_load(silent: true));
-          });
+          final body = event["body"]?.toString() ??
+              event["bodyPreview"]?.toString() ??
+              "";
+          // Pas de refresh HTTP pour une bulle d'appel (évite calltrace-* + serveur).
+          if (CallTraceInfo.tryParse(body) == null &&
+              !body.trim().startsWith(CallTraceInfo.bodyPrefix)) {
+            _threadRefresh?.cancel();
+            _threadRefresh = Timer(const Duration(seconds: 4), () {
+              if (mounted) unawaited(_load(silent: true));
+            });
+          }
           return;
         }
       }
@@ -568,17 +587,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _setMessageDeliveryStatus(String messageId, String status) {
-    if (!mounted) return;
+    if (!mounted || messageId.isEmpty) return;
     final normalizedStatus = status.trim().toUpperCase();
-    final index = _messages.indexWhere(
-      (raw) => raw is Map && raw["id"]?.toString() == messageId,
-    );
+    final index = _messages.indexWhere((raw) {
+      if (raw is! Map) return false;
+      if (raw["id"]?.toString() == messageId) return true;
+      // Filet : ack peut arriver avec clientMessageId.
+      return raw["clientMessageId"]?.toString() == messageId;
+    });
     if (index < 0) return;
     final raw = _messages[index];
     if (raw is! Map) return;
     final current = raw["deliveryStatus"]?.toString().trim().toUpperCase();
     final currentRank = _deliveryStatusRank(current);
     final nextRank = _deliveryStatusRank(normalizedStatus);
+    if (nextRank <= 0) return;
     if (currentRank >= nextRank && currentRank > 0) return;
     setState(() {
       final updated = Map<String, dynamic>.from(raw);
@@ -587,13 +610,49 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     });
   }
 
+  /// delivered/received sans ids → tous mes SENT deviennent DELIVERED.
+  void _markMineDelivered() {
+    if (!mounted) return;
+    final me = ref.read(sessionProvider).me?["user"];
+    final myId = me is Map ? me["id"]?.toString() : null;
+    if (myId == null) return;
+    var changed = false;
+    final next = <dynamic>[];
+    for (final raw in _messages) {
+      if (raw is! Map) {
+        next.add(raw);
+        continue;
+      }
+      if (raw["senderId"]?.toString() != myId || raw["pending"] == true) {
+        next.add(raw);
+        continue;
+      }
+      final rank = _deliveryStatusRank(raw["deliveryStatus"]);
+      if (rank >= 2) {
+        next.add(raw);
+        continue;
+      }
+      final updated = Map<String, dynamic>.from(raw);
+      updated["deliveryStatus"] = "DELIVERED";
+      next.add(updated);
+      changed = true;
+    }
+    if (changed) setState(() => _messages = next);
+  }
+
   Set<String> _eventMessageIds(Object? primary, [Object? secondary]) {
     final ids = <String>{};
     for (final source in [primary, secondary]) {
       if (source is! Map) continue;
       final many = source["messageIds"] ?? source["message_ids"];
       if (many is List) ids.addAll(many.map((id) => id.toString()));
-      for (final key in ["messageId", "message_id", "id"]) {
+      for (final key in [
+        "messageId",
+        "message_id",
+        "id",
+        "clientMessageId",
+        "client_message_id",
+      ]) {
         final value = source[key]?.toString();
         if (value != null && value.isNotEmpty) ids.add(value);
       }
@@ -642,14 +701,43 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         (payload is Map ? payload["bodyPreview"]?.toString() : null) ??
         "";
     final callTrace = CallTraceInfo.tryParse(body);
-    if (callTrace?.callId != null && callTrace!.callId!.isNotEmpty) {
-      for (final m in _messages) {
+    if (callTrace != null || body.trim().startsWith(CallTraceInfo.bodyPrefix)) {
+      final callId = callTrace?.callId?.trim() ?? "";
+      final syntheticId = callId.isNotEmpty ? "calltrace-$callId" : "";
+      if (syntheticId.isNotEmpty && _knownMessageIds.contains(syntheticId)) {
+        _knownMessageIds.add(id);
+        return true;
+      }
+      for (var i = 0; i < _messages.length; i++) {
+        final m = _messages[i];
         if (m is! Map) continue;
+        final mid = m["id"]?.toString() ?? "";
         final existing = CallTraceInfo.tryParse(m["body"]?.toString());
-        if (existing?.callId == callTrace.callId) {
-          _knownMessageIds.add(id);
-          return true;
+        final sameCall = (callId.isNotEmpty &&
+                (existing?.callId == callId ||
+                    mid == syntheticId ||
+                    mid == callId)) ||
+            (callId.isEmpty &&
+                existing != null &&
+                existing.kind == callTrace?.kind &&
+                existing.status == callTrace?.status &&
+                _callTracesCloseInTime(m, event));
+        if (!sameCall) continue;
+        _knownMessageIds.add(id);
+        if (syntheticId.isNotEmpty) _knownMessageIds.add(syntheticId);
+        // Remplacer la bulle locale synthétique par l'id serveur si besoin.
+        if (mid.startsWith("calltrace-") && !id.startsWith("calltrace-")) {
+          setState(() {
+            final updated = Map<String, dynamic>.from(m);
+            updated["id"] = id;
+            if (body.trim().startsWith(CallTraceInfo.bodyPrefix)) {
+              updated["body"] = body;
+            }
+            if (senderId != null) updated["senderId"] = senderId;
+            _messages[i] = updated;
+          });
         }
+        return true;
       }
     }
     final me = ref.read(sessionProvider).me?["user"];
@@ -685,6 +773,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         });
       }
       _knownMessageIds.add(id);
+      final cid = CallTraceInfo.tryParse(body)?.callId?.trim();
+      if (cid != null && cid.isNotEmpty) {
+        _knownMessageIds.add(cid);
+        _knownMessageIds.add("calltrace-$cid");
+      }
       _keepComposerFocus(wasFocused: keepFocus);
       return true;
     }
@@ -706,6 +799,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ];
     });
     _knownMessageIds.add(id);
+    final cid = CallTraceInfo.tryParse(body)?.callId?.trim();
+    if (cid != null && cid.isNotEmpty) {
+      _knownMessageIds.add(cid);
+      _knownMessageIds.add("calltrace-$cid");
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _scrollToBottom(force: true, animated: true);
     });
@@ -818,7 +916,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         );
         if (oldStatus > newStatus) {
           final merged = Map<String, dynamic>.from(incomingMessage);
-          merged["deliveryStatus"] = oldStatus >= 3 ? "READ" : "DELIVERED";
+          // Préserver le statut local (SENT/DELIVERED/READ), pas upgrader SENT→DELIVERED.
+          final localStatus =
+              m["deliveryStatus"]?.toString().trim().toUpperCase();
+          merged["deliveryStatus"] =
+              (localStatus != null && localStatus.isNotEmpty)
+                  ? localStatus
+                  : _deliveryStatusLabel(oldStatus);
           byId[id] = merged;
         }
       }
@@ -831,7 +935,62 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           DateTime.fromMillisecondsSinceEpoch(0);
       return ta.compareTo(tb);
     });
-    return list;
+    return _dedupeCallTraces(list);
+  }
+
+  /// Une seule bulle `__CALL__` par callId (local calltrace-* + éventuel serveur).
+  List<Map<String, dynamic>> _dedupeCallTraces(
+    List<Map<String, dynamic>> list,
+  ) {
+    if (list.length < 2) return list;
+    final bestByCallId = <String, int>{};
+    final drop = <int>{};
+    for (var i = 0; i < list.length; i++) {
+      final trace = CallTraceInfo.tryParse(list[i]["body"]?.toString());
+      var callId = trace?.callId?.trim() ?? "";
+      final mid = list[i]["id"]?.toString() ?? "";
+      if (callId.isEmpty && mid.startsWith("calltrace-")) {
+        callId = mid.substring("calltrace-".length);
+      }
+      if (callId.isEmpty) continue;
+      final prev = bestByCallId[callId];
+      if (prev == null) {
+        bestByCallId[callId] = i;
+        continue;
+      }
+      final prevId = list[prev]["id"]?.toString() ?? "";
+      final curId = mid;
+      final prevSynthetic = prevId.startsWith("calltrace-");
+      final curSynthetic = curId.startsWith("calltrace-");
+      if (prevSynthetic && !curSynthetic) {
+        drop.add(prev);
+        bestByCallId[callId] = i;
+      } else if (!prevSynthetic && curSynthetic) {
+        drop.add(i);
+      } else {
+        final prevAt =
+            DateTime.tryParse(list[prev]["createdAt"]?.toString() ?? "");
+        final curAt = DateTime.tryParse(list[i]["createdAt"]?.toString() ?? "");
+        if (curAt != null && (prevAt == null || curAt.isAfter(prevAt))) {
+          drop.add(prev);
+          bestByCallId[callId] = i;
+        } else {
+          drop.add(i);
+        }
+      }
+    }
+    if (drop.isEmpty) return list;
+    return [
+      for (var i = 0; i < list.length; i++)
+        if (!drop.contains(i)) list[i],
+    ];
+  }
+
+  bool _callTracesCloseInTime(Map existing, Map<String, dynamic> event) {
+    final a = DateTime.tryParse(existing["createdAt"]?.toString() ?? "");
+    final b = DateTime.tryParse(event["createdAt"]?.toString() ?? "");
+    if (a == null || b == null) return false;
+    return a.difference(b).inSeconds.abs() <= 90;
   }
 
   int _deliveryStatusRank(Object? value) {
@@ -849,6 +1008,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       default:
         return 0;
     }
+  }
+
+  String _deliveryStatusLabel(int rank) {
+    if (rank >= 3) return "READ";
+    if (rank >= 2) return "DELIVERED";
+    if (rank >= 1) return "SENT";
+    return "SENT";
   }
 
   @override
@@ -2281,14 +2447,51 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       final newer = realIndex < _messages.length - 1
                           ? _messages[realIndex + 1] as Map
                           : null;
-                      final sameAsOlder = older != null &&
-                          older["senderId"]?.toString() ==
-                              msg["senderId"]?.toString();
-                      final sameAsNewer = newer != null &&
-                          newer["senderId"]?.toString() ==
-                              msg["senderId"]?.toString();
                       final attachments =
                           (msg["attachments"] as List?) ?? const [];
+                      final createdAt = msg["createdAt"]?.toString();
+                      // Rupture de jour = 1er message du jour civil (vs message précédent).
+                      final showDaySep = older == null ||
+                          !sameCalendarDay(
+                            createdAt,
+                            older["createdAt"]?.toString(),
+                          );
+                      // Ne pas coller les bulles à travers une pastille de date.
+                      final sameAsOlder = older != null &&
+                          older["senderId"]?.toString() ==
+                              msg["senderId"]?.toString() &&
+                          !showDaySep;
+                      final sameAsNewer = newer != null &&
+                          newer["senderId"]?.toString() ==
+                              msg["senderId"]?.toString() &&
+                          sameCalendarDay(
+                            createdAt,
+                            newer["createdAt"]?.toString(),
+                          );
+                      final dayLabel = showDaySep
+                          ? formatChatDaySeparatorIso(
+                              createdAt,
+                              todayLabel: l10n.today,
+                              yesterdayLabel: l10n.yesterday,
+                              locale: l10n.lang.code,
+                            )
+                          : null;
+                      Widget withDaySep(Widget child) {
+                        if (dayLabel == null || dayLabel.isEmpty) {
+                          return child;
+                        }
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _ChatDaySeparator(label: dayLabel),
+                            child,
+                          ],
+                        );
+                      }
+                      final bubbleTime = () {
+                        final d = DateTime.tryParse(createdAt ?? "");
+                        return d == null ? "" : formatClock(d);
+                      }();
 
                       final edited = msg["editedAt"] != null;
                       final deleted = _messageIsDeleted(msg);
@@ -2300,7 +2503,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       final satisfactionTrace =
                           deleted ? null : SatisfactionTrace.tryParse(body);
                       if (satisfactionTrace != null) {
-                        return Padding(
+                        return withDaySep(Padding(
                           padding: const EdgeInsets.symmetric(vertical: 6),
                           child: Center(
                             child: ConstrainedBox(
@@ -2349,7 +2552,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               ),
                             ),
                           ),
-                        );
+                        ));
                       }
                       final notifyTrace =
                           deleted ? null : NotifyTrace.tryParse(body);
@@ -2358,7 +2561,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             msgId.isNotEmpty &&
                             !msgId.startsWith("local-") &&
                             notifyTrace.suggestsOfficialAck;
-                        return Padding(
+                        return withDaySep(Padding(
                           padding: const EdgeInsets.symmetric(vertical: 6),
                           child: Align(
                             alignment: mine
@@ -2381,14 +2584,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               ),
                             ),
                           ),
-                        );
+                        ));
                       }
                       final callTrace =
                           deleted ? null : CallTraceInfo.tryParse(body);
                       final replyTo = msg["replyTo"];
                       final replyDeleted = replyTo is Map &&
                           replyTo["deletedAt"] != null;
-                      return _SwipeToReply(
+                      return withDaySep(_SwipeToReply(
                         enabled: !deleted &&
                             !_selectionMode &&
                             !_composerBlocked &&
@@ -2434,9 +2637,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               Expanded(
                                 child: _MessageBubble(
                                   body: body,
-                                  time: formatMessageTime(
-                                    msg["createdAt"]?.toString(),
-                                  ),
+                                  time: bubbleTime,
                                   mine: mine,
                                   deliveryStatus: mine
                                       ? messageDeliveryStatus(
@@ -2494,7 +2695,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           ),
                         ),
                         ),
-                      );
+                      ));
                     },
                   ),
                     ),
@@ -2886,6 +3087,52 @@ class _SwipeToReplyState extends State<_SwipeToReply>
             child: widget.child,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Pastille centrée : rupture de jour dans le fil (Aujourd'hui / Hier / date).
+class _ChatDaySeparator extends StatelessWidget {
+  const _ChatDaySeparator({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Center(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: isDark
+                ? const Color(0xE61F2C34)
+                : const Color(0xE6E7E4DE),
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: isDark ? 0.25 : 0.06),
+                blurRadius: 2,
+                offset: const Offset(0, 1),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
+                color: isDark
+                    ? const Color(0xFFD1D7DB)
+                    : const Color(0xFF54656F),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

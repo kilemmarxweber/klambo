@@ -171,7 +171,10 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
       final kind = parts.isNotEmpty ? parts[0] : "";
       if (kind == "call") {
         await NotificationService.instance.cancelIncomingCallNotification();
-        ref.read(callHubProvider)?.showCallScreen();
+        final hub = ref.read(callHubProvider);
+        // Relaye l'offre native si l'app vient d'être ouverte par la notif.
+        await hub?.consumeNativeCall();
+        hub?.showCallScreen();
         return;
       }
       if (kind != "message") return;
@@ -1308,7 +1311,11 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                                     satisfactionPreview?.preview ??
                                     notifyPreview?.preview ??
                                     callPreview?.label ??
-                                    previewRaw;
+                                    (CallTraceInfo.looksLikeCallTrace(
+                                          previewRaw,
+                                        )
+                                        ? CallTraceInfo.previewOf(previewRaw)
+                                        : previewRaw);
                                 final needsSatisfaction =
                                     (satisfactionPreview?.pendingCount ?? 0) > 0;
                                 final lastAt = last is Map

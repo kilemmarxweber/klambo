@@ -108,6 +108,10 @@ class MessagingSocket {
           }
           if (type.startsWith("call.")) {
             onCallEvent?.call(map);
+            // Relaye aussi call.offer vers le hub (notif + ouverture UI).
+            if (type == "call.offer") {
+              onMessageEvent?.call(map);
+            }
             return;
           }
           if (type == "message.created" ||
@@ -137,11 +141,6 @@ class MessagingSocket {
       cancelOnError: true,
     );
 
-    _ensurePingTimer();
-  }
-
-  void _ensurePingTimer() {
-    _pingTimer?.cancel();
     _pingTimer = Timer.periodic(const Duration(seconds: 25), (_) {
       if (!_connected || !_appForeground) return;
       final lastPong = _lastPongAt;
@@ -166,40 +165,16 @@ class MessagingSocket {
     _reconnectTimer = Timer(Duration(seconds: seconds), connect);
   }
 
-  /// Premier plan : assure le monitoring. Arrière-plan : stoppe la boucle
-  /// de reconnect (FCM / FGS + sync HTTP au retour).
+  /// Premier plan : reconnecte. Arrière-plan : stoppe la boucle de reconnect
+  /// (le serveur + FCM / FGS gardent la vérité).
   void setAppForeground(bool foreground) {
     if (_disposed) return;
-    if (_appForeground == foreground) {
-      // Même état (ex. resume sans BG) : reconnecter si down, sinon
-      // réarmer le ping si le timer a été annulé.
-      if (foreground) {
-        if (!_connected) {
-          reconnectNow();
-        } else if (_pingTimer == null || !(_pingTimer!.isActive)) {
-          _ensurePingTimer();
-          sendJson({"type": "ping"});
-        }
-      }
-      return;
-    }
+    if (_appForeground == foreground) return;
     _appForeground = foreground;
     if (foreground) {
       debugPrint("[ws] app foreground → ensure socket");
       if (!_connected) {
         reconnectNow();
-        return;
-      }
-      // Bug 1: après BG le ping est annulé ; sans le recréer, un socket
-      // périmé (close non encore livré) n'est jamais sondé.
-      _ensurePingTimer();
-      final lastPong = _lastPongAt;
-      if (lastPong == null ||
-          DateTime.now().difference(lastPong) > const Duration(seconds: 55)) {
-        debugPrint("[ws] stale after background → reconnect");
-        reconnectNow();
-      } else {
-        sendJson({"type": "ping"});
       }
     } else {
       debugPrint("[ws] app background → pause reconnect loop");
@@ -276,11 +251,9 @@ class MessagingSocket {
   }
 
   /// Force une reconnexion immédiate (ex. retour au premier plan).
-  ///
-  /// Ne force **pas** `_appForeground` : un changement réseau en BG
-  /// (via [CallHub]) ne doit pas rouvrir le WS Flutter en arrière-plan.
   void reconnectNow() {
     if (_disposed) return;
+    _appForeground = true;
     _reconnectAttempt = 0;
     connect();
   }
