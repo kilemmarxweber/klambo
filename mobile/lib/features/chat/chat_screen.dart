@@ -431,9 +431,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final convId = event["conversationId"]?.toString() ??
         (payload is Map ? payload["conversationId"]?.toString() : null);
 
-    if (type == "link.up" || type == "link.down") {
+    if (type == "link.up" || type == "link.down" || type == "sync.resume") {
       if (mounted) setState(() {});
-      if (type == "link.up") unawaited(_bindPresence());
+      if (type == "link.up" || type == "sync.resume") {
+        // Rattrapage HTTP : messages stockés pendant BG / kill (WS ou FCM).
+        unawaited(_bindPresence());
+        unawaited(_load(silent: true));
+      }
       return;
     }
 

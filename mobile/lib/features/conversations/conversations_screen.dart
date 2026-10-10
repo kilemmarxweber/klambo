@@ -316,9 +316,10 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
 
   void _onInboxEvent(Map<String, dynamic> event) {
     final type = event["type"]?.toString() ?? "";
-    if (type == "link.up") {
+    if (type == "link.up" || type == "sync.resume") {
       if (mounted) setState(() {});
       unawaited(_refreshPresenceSnapshot());
+      // Reconnect WS ou simple retour premier plan → delta `since`.
       if (shouldCatchUpOnLink(inboxPrimed: _listPrimed)) {
         unawaited(_load(silent: true, catchUp: true));
       }

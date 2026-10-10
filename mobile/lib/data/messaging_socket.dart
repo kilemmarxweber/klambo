@@ -8,6 +8,9 @@ import "package:klambo_messagerie/core/config.dart";
 typedef CallEventHandler = void Function(Map<String, dynamic> event);
 
 /// Client WS messagerie + signaling appels + présence (avec reconnexion).
+///
+/// Destiné au **premier plan**. En arrière-plan, [setAppForeground] (false)
+/// coupe la reconnexion agressive : FCM / FGS + sync HTTP au retour.
 class MessagingSocket {
   MessagingSocket({required this.token});
 
@@ -19,6 +22,8 @@ class MessagingSocket {
   int _reconnectAttempt = 0;
   bool _disposed = false;
   bool _connected = false;
+  /// false = app en arrière-plan : pas de reconnect en boucle.
+  bool _appForeground = true;
   DateTime? _lastPongAt;
   String? _subscribedOrgId;
 
@@ -29,6 +34,7 @@ class MessagingSocket {
   void Function()? onDisconnected;
 
   bool get isConnected => _connected;
+  bool get appForeground => _appForeground;
 
   Uri get _uri {
     final base = Uri.parse(AppConfig.apiBaseUrl);
@@ -46,6 +52,10 @@ class MessagingSocket {
 
   void connect() {
     if (_disposed) return;
+    if (!_appForeground) {
+      debugPrint("[ws] skip connect (app background — FCM/FGS + sync on resume)");
+      return;
+    }
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _sub?.cancel();
@@ -132,7 +142,7 @@ class MessagingSocket {
     );
 
     _pingTimer = Timer.periodic(const Duration(seconds: 25), (_) {
-      if (!_connected) return;
+      if (!_connected || !_appForeground) return;
       final lastPong = _lastPongAt;
       if (lastPong != null &&
           DateTime.now().difference(lastPong) > const Duration(seconds: 55)) {
@@ -146,13 +156,33 @@ class MessagingSocket {
   }
 
   void _scheduleReconnect() {
-    if (_disposed) return;
+    if (_disposed || !_appForeground) return;
     _reconnectTimer?.cancel();
     final attempt = _reconnectAttempt.clamp(0, 6);
     final seconds = [2, 3, 5, 8, 13, 21, 30][attempt];
     _reconnectAttempt = attempt + 1;
     debugPrint("[ws] reconnect in ${seconds}s (attempt $_reconnectAttempt)");
     _reconnectTimer = Timer(Duration(seconds: seconds), connect);
+  }
+
+  /// Premier plan : reconnecte. Arrière-plan : stoppe la boucle de reconnect
+  /// (le serveur + FCM / FGS gardent la vérité).
+  void setAppForeground(bool foreground) {
+    if (_disposed) return;
+    if (_appForeground == foreground) return;
+    _appForeground = foreground;
+    if (foreground) {
+      debugPrint("[ws] app foreground → ensure socket");
+      if (!_connected) {
+        reconnectNow();
+      }
+    } else {
+      debugPrint("[ws] app background → pause reconnect loop");
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
+      _pingTimer?.cancel();
+      _pingTimer = null;
+    }
   }
 
   void _markDisconnected() {
@@ -223,6 +253,7 @@ class MessagingSocket {
   /// Force une reconnexion immédiate (ex. retour au premier plan).
   void reconnectNow() {
     if (_disposed) return;
+    _appForeground = true;
     _reconnectAttempt = 0;
     connect();
   }

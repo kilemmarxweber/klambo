@@ -5,8 +5,11 @@ import "package:flutter/services.dart";
 import "package:permission_handler/permission_handler.dart";
 import "package:shared_preferences/shared_preferences.dart";
 
-/// Maintient Klambocore en arrière-plan (Android) pour les alertes
-/// écran verrouillé ou application quittée.
+/// Foreground Service Android — filet, pas le canal principal de messagerie.
+///
+/// Production cible : WS Flutter au premier plan + FCM si process tué +
+/// sync HTTP à la reprise. Le FGS reste utile pour les **appels** (micro /
+/// caméra) et, tant que [pushToken] est stub, comme filet messaging.
 class BackgroundAlerts {
   BackgroundAlerts._();
 

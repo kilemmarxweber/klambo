@@ -236,6 +236,25 @@ class CallHub {
     }
   }
 
+  /// App au premier plan : WS prioritaire + signal de rattrapage HTTP.
+  /// Même si le socket est déjà « up », inbox / fil doivent resynchroniser
+  /// (messages stockés côté serveur pendant l'absence / FCM).
+  void onAppResumed() {
+    if (_hubDisposed) return;
+    socket.setAppForeground(true);
+    if (!socket.isConnected) {
+      socket.reconnectNow();
+    }
+    _emitLink("sync.resume");
+  }
+
+  /// Quitte le premier plan : pause la boucle de reconnect Flutter.
+  /// FGS (appel / filet) ou FCM prennent le relais — pas un 2e WS Flutter.
+  void onAppBackgrounded() {
+    if (_hubDisposed) return;
+    socket.setAppForeground(false);
+  }
+
   void _bindCallKit() {
     if (kIsWeb || defaultTargetPlatform != TargetPlatform.iOS) return;
     _callKit.setMethodCallHandler((call) async {
@@ -257,9 +276,14 @@ class CallHub {
     });
   }
 
+  /// Branche FCM dès qu'Android expose un jeton (`pushToken` non null).
+  /// Sans FCM, le FGS reste le filet arrière-plan (voir [BackgroundAlerts]).
   Future<void> _registerPushToken() async {
     final token = await BackgroundAlerts.pushToken();
-    if (token == null || token.isEmpty) return;
+    if (token == null || token.isEmpty) {
+      debugPrint("[hub] push token absent — WS FG + FGS filet + sync resume");
+      return;
+    }
     try {
       await _calls.registerPushToken(token: token, platform: "android");
     } catch (e) {

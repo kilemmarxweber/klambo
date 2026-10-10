@@ -1,9 +1,10 @@
 import "package:klambo_messagerie/core/call_trace.dart";
 
-/// Liste et fil : une lecture complète, puis l'écoute.
+/// Politique de sync : WS au premier plan, HTTP en filet, FCM si process tué.
 ///
-/// Même filet que le fil ouvert : le WS peut être « up » sans Redis, donc
-/// sans `message.created`. HTTP `since` rattrape la liste comme le chat.
+/// - Inbox : GET `since` au `link.up` / `sync.resume` + poll léger.
+/// - Fil ouvert : `_load(silent)` au même signal (messages manquants).
+/// - Le WS peut être « up » sans Redis → HTTP rattrape `message.created` ratés.
 bool shouldPollInbox({required bool socketConnected}) => true;
 
 /// Secours HTTP du fil : toujours utile (cache WS raté), plus fréquent si WS down.
