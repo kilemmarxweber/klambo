@@ -610,26 +610,30 @@ class CallHub {
       return;
     }
     final callId = call.callId.trim();
-    // Dédup uniquement par callId (hangup local + echo). Ne jamais utiliser
-    // conversation|kind|status : deux appels distincts au même statut seraient
-    // incorrectement fusionnés.
-    if (callId.isNotEmpty) {
-      final dedupeKeys = <String>[callId, "calltrace-$callId"];
-      if (dedupeKeys.any(_publishedCallTraces.contains)) {
-        debugPrint("[hub] call trace déjà publiée — ignorée ($callId)");
-        return;
-      }
-      _publishedCallTraces.addAll(dedupeKeys);
-      while (_publishedCallTraces.length > 200) {
-        _publishedCallTraces.remove(_publishedCallTraces.first);
-      }
-    }
-
-    final body = trace.toBody();
     final clearPreview = trace.label;
     final messageId = callId.isNotEmpty
         ? "calltrace-$callId"
         : "calltrace-${DateTime.now().millisecondsSinceEpoch}";
+    // Avec callId : dédup stricte. Sans callId : fenêtre 3 s (echo hangup),
+    // sans bloquer deux vrais appels espacés (pas de clé sticky kind|status).
+    final dedupeKeys = callId.isNotEmpty
+        ? <String>[callId, "calltrace-$callId", messageId]
+        : <String>[
+            "nocallid|$conversationId|${call.peerUserId}|"
+                "${trace.kind}|${trace.status}|${trace.endReason ?? ""}|"
+                "${DateTime.now().millisecondsSinceEpoch ~/ 3000}",
+            messageId,
+          ];
+    if (dedupeKeys.any(_publishedCallTraces.contains)) {
+      debugPrint("[hub] call trace déjà publiée — ignorée ($callId)");
+      return;
+    }
+    _publishedCallTraces.addAll(dedupeKeys);
+    while (_publishedCallTraces.length > 200) {
+      _publishedCallTraces.remove(_publishedCallTraces.first);
+    }
+
+    final body = trace.toBody();
     // Appelant → bulle à droite ; sinon (manqué entrant / refus) → côté peer.
     final senderId = call.isCaller ? localUserId : call.peerUserId;
     rememberIncomingMessage(messageId);
