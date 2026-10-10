@@ -165,6 +165,24 @@ class CallHub {
     _messageController.add({"type": type});
   }
 
+  /// App au premier plan : WS prioritaire + signal de rattrapage HTTP.
+  /// Même si le socket est déjà « up », inbox / fil doivent resynchroniser.
+  void onAppResumed() {
+    if (_hubDisposed) return;
+    socket.setAppForeground(true);
+    if (!socket.isConnected) {
+      socket.reconnectNow();
+    }
+    _emitLink("sync.resume");
+  }
+
+  /// Quitte le premier plan : pause la boucle de reconnect Flutter.
+  /// FGS (appel / filet) ou FCM prennent le relais — pas un 2e WS Flutter.
+  void onAppBackgrounded() {
+    if (_hubDisposed) return;
+    socket.setAppForeground(false);
+  }
+
   /// Aucune requête d'appel tant que le WebSocket répond.
   /// Sinon un intervalle court en communication, long au repos.
   void _scheduleCallFallback() {
@@ -293,7 +311,7 @@ class CallHub {
         presence.setNetworkUp(networkUp);
         if (!networkUp) {
           controller.onNetworkChanged();
-        } else if (!socket.isConnected) {
+        } else if (socket.appForeground && !socket.isConnected) {
           socket.reconnectNow();
         }
       });
@@ -334,14 +352,17 @@ class CallHub {
     presence.setNetworkUp(networkUp);
 
     if (previous == null) {
-      if (networkUp && !socket.isConnected) socket.reconnectNow();
+      if (networkUp && socket.appForeground && !socket.isConnected) {
+        socket.reconnectNow();
+      }
       return;
     }
     if (_sameNetwork(previous, results)) return;
     controller.onNetworkChanged();
     // Recreate the socket after interface changes so presence is restored only
     // after the new connection receives its server handshake.
-    if (networkUp) socket.reconnectNow();
+    // En BG : ne pas rouvrir le WS Flutter (Bug 2) — FGS / FCM + sync au resume.
+    if (networkUp && socket.appForeground) socket.reconnectNow();
   }
 
   bool _hasNetwork(List<ConnectivityResult> results) =>

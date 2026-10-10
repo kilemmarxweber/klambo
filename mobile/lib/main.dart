@@ -78,10 +78,11 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     NotificationService.instance.setLifecycle(state);
     final hub = ref.read(callHubProvider);
-    // Verrouillé / arrière-plan : le service natif garde l'écoute WS + présence.
+    // Verrouillé / arrière-plan : pause reconnect Flutter ; FGS = filet.
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.inactive) {
+      hub?.onAppBackgrounded();
       unawaited(BackgroundAlerts.touch());
       unawaited(BackgroundAlerts.ensureAlive());
       if (hub != null &&
@@ -106,10 +107,9 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
       unawaited(BackgroundAlerts.touch());
       unawaited(BackgroundAlerts.ensureAlive());
       if (hub != null) {
+        // WS + ping + sync.resume (même si déjà « connected »).
+        hub.onAppResumed();
         unawaited(hub.consumeNativeCall());
-        if (!hub.socket.isConnected) {
-          hub.socket.reconnectNow();
-        }
         final orgId = hub.presence.organizationId;
         if (orgId != null && orgId.isNotEmpty) {
           unawaited(hub.touchPresence());
@@ -123,6 +123,7 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
     // Uniquement kill process / detach — pas `hidden` (Chrome le tire souvent
     // et coupait l'appel + disposait le media en plein ring).
     if (state == AppLifecycleState.detached) {
+      hub?.onAppBackgrounded();
       // Ne coupe PAS le service Android : il doit continuer à écouter.
       unawaited(BackgroundAlerts.ensureAlive());
       if (hub != null) {
