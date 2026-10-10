@@ -56,7 +56,8 @@ class BackgroundAlerts {
     try {
       await _channel.invokeMethod<void>("start");
       serviceStarted = true;
-      unawaited(requestAllPrivileges());
+      // Pas de requestAllPrivileges ici : RootGate._armAlerts le fait une
+      // seule fois (différé) pour éviter les dialogues runtime en double.
       _schedulePrivilegeRetry();
     } catch (e) {
       serviceStarted = false;
