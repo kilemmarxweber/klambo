@@ -169,10 +169,9 @@ class CallHub {
   /// Même si le socket est déjà « up », inbox / fil doivent resynchroniser.
   void onAppResumed() {
     if (_hubDisposed) return;
+    // setAppForeground reconnecte déjà si besoin — ne pas rappeler
+    // reconnectNow() ici (2e connect() coupe le 1er canal en cours).
     socket.setAppForeground(true);
-    if (!socket.isConnected) {
-      socket.reconnectNow();
-    }
     _emitLink("sync.resume");
   }
 

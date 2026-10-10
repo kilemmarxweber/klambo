@@ -171,11 +171,15 @@ class MessagingSocket {
   void setAppForeground(bool foreground) {
     if (_disposed) return;
     if (_appForeground == foreground) {
-      // Même état, mais après un séjour en BG le ping a pu être annulé
-      // tandis que `_connected` restait true — réarmer si besoin.
-      if (foreground && _connected && (_pingTimer == null || !(_pingTimer!.isActive))) {
-        _ensurePingTimer();
-        sendJson({"type": "ping"});
+      // Même état (ex. resume sans BG) : reconnecter si down, sinon
+      // réarmer le ping si le timer a été annulé.
+      if (foreground) {
+        if (!_connected) {
+          reconnectNow();
+        } else if (_pingTimer == null || !(_pingTimer!.isActive)) {
+          _ensurePingTimer();
+          sendJson({"type": "ping"});
+        }
       }
       return;
     }
