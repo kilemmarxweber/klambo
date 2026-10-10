@@ -102,7 +102,20 @@ class AlertConnectionService : Service() {
         markWanted(true)
         AppVisibility.serviceRunning = true
         val ongoing = ongoingNotification()
-        startMessagingForeground(ongoing)
+        // Un échec FGS ne doit jamais tuer le process (sinon l'UI se ferme
+        // juste après une mise à jour / MY_PACKAGE_REPLACED).
+        try {
+            startMessagingForeground(ongoing)
+        } catch (error: Exception) {
+            android.util.Log.e("klambo", "startMessagingForeground", error)
+            try {
+                startForeground(ONGOING_ID, ongoing)
+            } catch (fatal: Exception) {
+                android.util.Log.e("klambo", "startForeground fallback", fatal)
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        }
         when (intent?.action) {
             ACTION_STOP_RING -> {
                 stopRing()
@@ -128,7 +141,11 @@ class AlertConnectionService : Service() {
                 return START_STICKY
             }
             ACTION_IDLE -> {
-                startMessagingForeground(ongoing)
+                try {
+                    startMessagingForeground(ongoing)
+                } catch (error: Exception) {
+                    android.util.Log.w("klambo", "idle foreground", error)
+                }
                 return START_STICKY
             }
         }
@@ -923,9 +940,23 @@ class AlertConnectionService : Service() {
     private fun startMessagingForeground(notification: Notification) {
         releaseCallAudio()
         if (Build.VERSION.SDK_INT >= 34) {
-            val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING or
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            startForeground(ONGOING_ID, notification, types)
+            // remoteMessaging d'abord ; dataSync est optionnel (OEM / policy).
+            try {
+                startForeground(
+                    ONGOING_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                )
+                return
+            } catch (error: Exception) {
+                android.util.Log.w("klambo", "FGS dataSync|messaging refused", error)
+            }
+            startForeground(
+                ONGOING_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING,
+            )
         } else {
             startForeground(ONGOING_ID, notification)
         }

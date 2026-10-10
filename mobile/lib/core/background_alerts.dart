@@ -180,8 +180,9 @@ class BackgroundAlerts {
   static void _schedulePrivilegeRetry() {
     _privilegeRetry?.cancel();
     if (!_android) return;
-    // Enchaîne le prochain réglage manquant (batterie → alarmes → …).
-    _privilegeRetry = Timer(const Duration(seconds: 8), () {
+    // Différé : juste après une MAJ, ouvrir Réglages trop tôt fait
+    // « disparaître » l'app. Un seul rappel léger.
+    _privilegeRetry = Timer(const Duration(seconds: 45), () {
       unawaited(requestAllPrivileges(runtime: false));
     });
   }

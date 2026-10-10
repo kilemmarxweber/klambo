@@ -126,22 +126,28 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
-     * Ouvre le prochain réglage manquant (un seul à la fois) pour rester
-     * actif écran verrouillé : batterie → alarmes → plein écran → overlay.
+     * Au cold start / après MAJ, ne pas enchaîner les écrans Réglages :
+     * ça fait croire que Klambo s'est fermé. Au plus 1 prompt / 12 h.
      */
     private fun ensureBackgroundPrivileges(): Boolean {
+        val prefs = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+        val lastPrompt = prefs.getLong(PRIVILEGE_PROMPT_AT, 0L)
+        val now = System.currentTimeMillis()
+        if (now - lastPrompt < 12L * 60L * 60L * 1000L) {
+            return isFullyPrivileged()
+        }
+
         try {
             val pm = getSystemService(PowerManager::class.java)
             if (pm != null && !pm.isIgnoringBatteryOptimizations(packageName)) {
-                if (openSetting(
-                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                            data = Uri.parse("package:$packageName")
-                        },
-                    )
-                ) {
-                    return true
-                }
-                return openSetting(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                val ok = openSettingOnce(
+                    prefs,
+                    now,
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    },
+                )
+                if (ok) return false
             }
         } catch (_: Exception) {
         }
@@ -149,39 +155,32 @@ class MainActivity : FlutterActivity() {
             try {
                 val am = getSystemService(AlarmManager::class.java)
                 if (am != null && !am.canScheduleExactAlarms()) {
-                    return openSetting(
+                    val ok = openSettingOnce(
+                        prefs,
+                        now,
                         Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
                             data = Uri.parse("package:$packageName")
                         },
                     )
+                    if (ok) return false
                 }
             } catch (_: Exception) {
             }
         }
-        if (Build.VERSION.SDK_INT >= 34) {
+        // Overlay / FSI : pas d'auto-ouverture au lancement (trop intrusif).
+        return isFullyPrivileged()
+    }
+
+    private fun isFullyPrivileged(): Boolean {
+        if (!isBatteryExempt()) return false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
-                val nm = getSystemService(NotificationManager::class.java)
-                if (nm != null && !nm.canUseFullScreenIntent()) {
-                    return openSetting(
-                        Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
-                            data = Uri.parse("package:$packageName")
-                        },
-                    )
-                }
+                val am = getSystemService(AlarmManager::class.java)
+                if (am != null && !am.canScheduleExactAlarms()) return false
             } catch (_: Exception) {
             }
         }
-        try {
-            if (!Settings.canDrawOverlays(this)) {
-                return openSetting(
-                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
-                        data = Uri.parse("package:$packageName")
-                    },
-                )
-            }
-        } catch (_: Exception) {
-        }
-        return isBatteryExempt()
+        return true
     }
 
     private fun isBatteryExempt(): Boolean {
@@ -191,6 +190,16 @@ class MainActivity : FlutterActivity() {
         } catch (_: Exception) {
             false
         }
+    }
+
+    private fun openSettingOnce(
+        prefs: android.content.SharedPreferences,
+        now: Long,
+        intent: Intent,
+    ): Boolean {
+        if (!openSetting(intent)) return false
+        prefs.edit().putLong(PRIVILEGE_PROMPT_AT, now).apply()
+        return true
     }
 
     private fun openSetting(intent: Intent): Boolean {
@@ -332,5 +341,6 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "klambo/background"
         private const val LOCK_CHANNEL = "com.klambocore.klambo/lock_screen"
+        private const val PRIVILEGE_PROMPT_AT = "flutter.klambo_privilege_prompt_at"
     }
 }

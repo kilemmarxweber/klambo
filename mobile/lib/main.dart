@@ -188,8 +188,10 @@ class _RootGateState extends ConsumerState<RootGate> {
     unawaited(SoundService.instance.warmUp());
     if (kIsWeb) return;
     await NotificationService.instance.requestPermissions();
-    // FGS : nécessaire pour appels ; messaging jusqu'à branchement FCM.
+    // FGS d'abord — l'UI reste visible. Les prompts Réglages (batterie…)
+    // sont différés pour ne pas « fermer » l'app juste après une MAJ.
     await BackgroundAlerts.start();
+    await Future<void>.delayed(const Duration(seconds: 4));
     await BackgroundAlerts.requestAllPrivileges();
   }
 

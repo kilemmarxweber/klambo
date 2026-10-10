@@ -107,11 +107,9 @@ class MessagingSocket {
             return;
           }
           if (type.startsWith("call.")) {
+            // Uniquement via onCallEvent → CallController → onIncomingRing.
+            // Ne pas relayer call.offer vers onMessageEvent (double notif).
             onCallEvent?.call(map);
-            // Relaye aussi call.offer vers le hub (notif + ouverture UI).
-            if (type == "call.offer") {
-              onMessageEvent?.call(map);
-            }
             return;
           }
           if (type == "message.created" ||
@@ -250,10 +248,17 @@ class MessagingSocket {
     });
   }
 
-  /// Force une reconnexion immédiate (ex. retour au premier plan).
+  /// Reconnexion immédiate **si** l'app est au premier plan.
+  ///
+  /// Ne force pas `_appForeground` : un changement réseau en BG (via
+  /// [CallHub]) ne doit pas rouvrir le WS Flutter — FGS / FCM prennent le relais.
+  /// Pour reprendre le WS, appeler d'abord [setAppForeground](true).
   void reconnectNow() {
     if (_disposed) return;
-    _appForeground = true;
+    if (!_appForeground) {
+      debugPrint("[ws] reconnectNow skipped (app background)");
+      return;
+    }
     _reconnectAttempt = 0;
     connect();
   }

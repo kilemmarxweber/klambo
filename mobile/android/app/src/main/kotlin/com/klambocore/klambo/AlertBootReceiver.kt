@@ -26,10 +26,14 @@ class AlertBootReceiver : BroadcastReceiver() {
         if (token.isNullOrBlank()) return
         val wanted = prefs.getBoolean("flutter.klambo_bg_wanted", true)
         if (!wanted) return
-        ContextCompat.startForegroundService(
-            context,
-            Intent(context, AlertConnectionService::class.java)
-                .setAction(AlertConnectionService.ACTION_START),
-        )
+        try {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, AlertConnectionService::class.java)
+                    .setAction(AlertConnectionService.ACTION_START),
+            )
+        } catch (error: Exception) {
+            android.util.Log.w("klambo", "boot/update FGS start failed: $action", error)
+        }
     }
 }

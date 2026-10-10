@@ -328,7 +328,7 @@ class CallHub {
         presence.setNetworkUp(networkUp);
         if (!networkUp) {
           controller.onNetworkChanged();
-        } else if (!socket.isConnected) {
+        } else if (socket.appForeground && !socket.isConnected) {
           socket.reconnectNow();
         }
       });
@@ -369,14 +369,19 @@ class CallHub {
     presence.setNetworkUp(networkUp);
 
     if (previous == null) {
-      if (networkUp && !socket.isConnected) socket.reconnectNow();
+      // WS Flutter seulement au premier plan ; FGS/FCM en BG.
+      if (networkUp && socket.appForeground && !socket.isConnected) {
+        socket.reconnectNow();
+      }
       return;
     }
     if (_sameNetwork(previous, results)) return;
     controller.onNetworkChanged();
     // Recreate the socket after interface changes so presence is restored only
     // after the new connection receives its server handshake.
-    if (networkUp) socket.reconnectNow();
+    if (networkUp && socket.appForeground) {
+      socket.reconnectNow();
+    }
   }
 
   bool _hasNetwork(List<ConnectivityResult> results) =>
@@ -436,20 +441,8 @@ class CallHub {
 
     final type = event["type"]?.toString() ?? "";
 
-    if (type == "call.offer") {
-      final to = event["toUserId"]?.toString();
-      final from = event["fromUserId"]?.toString();
-      final forMe = from != localUserId &&
-          (to == null || to.isEmpty || to == "null" || to == localUserId);
-      if (forMe) {
-        unawaited(_alertIncomingCall());
-        // Filet : si le contrôleur n'a pas encore basculé, forcer l'UI.
-        if (controller.phase == CallPhase.ringingIn) {
-          showCallScreen();
-        }
-      }
-      return;
-    }
+    // call.offer : traité uniquement par CallController.onIncomingRing
+    // (alerte + CallScreen). Pas de 2e _alertIncomingCall ici.
 
     if (type == "message.created") {
       unawaited(_acknowledgeIncomingDelivery(event));
