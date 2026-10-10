@@ -377,12 +377,7 @@ class _FullScreenImageState extends State<_FullScreenImage> {
   }
 
   void _onVerticalDragEnd(DragEndDetails details) {
-    // Zoom pendant le drag : ne pas fermer, mais annuler le décalage
-    // sinon l'image reste décalée pendant le pan zoomé.
-    if (_zoomed) {
-      if (_dragY != 0) setState(() => _dragY = 0);
-      return;
-    }
+    if (_zoomed) return;
     final velocity = details.primaryVelocity ?? 0;
     if (_dragY.abs() > 90 || velocity.abs() > 650) {
       _close();
@@ -424,11 +419,7 @@ class _FullScreenImageState extends State<_FullScreenImage> {
                       minScale: 0.8,
                       maxScale: 4,
                       onInteractionEnd: (_) {
-                        if (!mounted) return;
-                        // Fin de pinch/zoom : annuler un éventuel décalage de dismiss.
-                        setState(() {
-                          if (_zoomed && _dragY != 0) _dragY = 0;
-                        });
+                        if (mounted) setState(() {});
                       },
                       child: Hero(
                         tag: "contact-avatar-${widget.name}",
