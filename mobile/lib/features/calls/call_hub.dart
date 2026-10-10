@@ -537,15 +537,14 @@ class CallHub {
       p["sender"] is Map ? (p["sender"] as Map)["image"] : null,
       event["sender"] is Map ? (event["sender"] as Map)["image"] : null,
     ]);
-    final rawBody = event["bodyPreview"]?.toString() ??
-        event["body"]?.toString() ??
+    // Préférer body (JSON complet) pour parser, puis bodyPreview.
+    final rawFull = event["body"]?.toString() ??
         p["body"]?.toString() ??
+        event["bodyPreview"]?.toString() ??
         p["text"]?.toString() ??
         "Nouveau message";
-    final body = NotifyTrace.tryParse(rawBody)?.preview ??
-        SatisfactionTrace.tryParse(rawBody)?.preview ??
-        CallTraceInfo.tryParse(rawBody)?.label ??
-        rawBody;
+    final rawPreview = event["bodyPreview"]?.toString() ?? "";
+    final body = _humanizeNotifBody(rawFull, rawPreview);
     final messageId = _firstId([
       p["id"],
       p["messageId"],
@@ -691,15 +690,43 @@ class CallHub {
         !(inActiveChat && foreground);
     if (!showNotif) return;
 
+    // Filet final : jamais de JSON d'appel dans la notif.
+    final clearBody = _humanizeNotifBody(body, body);
+
     await NotificationService.instance.showMessageNotification(
       title: title,
-      body: body,
+      body: clearBody,
       avatarUrl: avatarUrl,
       conversationId: conversationId,
       organizationId: organizationId,
       badgeCount: nextBadge > 0 ? nextBadge : 1,
       silent: !AlertPrefs.instance.soundsEnabled,
     );
+  }
+
+  /// Texte notif humain (manqué / refusé / durée…) — jamais `__CALL__:{…}`.
+  String _humanizeNotifBody(String rawFull, String rawPreview) {
+    final fromFull = CallTraceInfo.tryParse(rawFull)?.label;
+    if (fromFull != null) return fromFull;
+    if (CallTraceInfo.looksLikeCallTrace(rawFull)) {
+      return CallTraceInfo.previewOf(rawFull);
+    }
+    final fromPreview = CallTraceInfo.tryParse(rawPreview)?.label;
+    if (fromPreview != null) return fromPreview;
+    if (CallTraceInfo.looksLikeCallTrace(rawPreview)) {
+      return CallTraceInfo.previewOf(rawPreview);
+    }
+    final notify = NotifyTrace.tryParse(rawFull)?.preview ??
+        NotifyTrace.tryParse(rawPreview)?.preview;
+    if (notify != null) return notify;
+    final satisfaction = SatisfactionTrace.tryParse(rawFull)?.preview ??
+        SatisfactionTrace.tryParse(rawPreview)?.preview;
+    if (satisfaction != null) return satisfaction;
+    final candidate = rawPreview.trim().isNotEmpty ? rawPreview : rawFull;
+    if (CallTraceInfo.looksLikeCallTrace(candidate)) {
+      return CallTraceInfo.previewOf(candidate);
+    }
+    return candidate;
   }
 
   String? _firstId(List<dynamic> values) {
@@ -819,6 +846,8 @@ class CallHub {
           "[hub] callee $calleeId appears offline — offer will still be sent/retried",
         );
       }
+      // warmUp d'abord : sinon le 1er appel sortant reste muet.
+      await SoundService.instance.warmUp();
       unawaited(SoundService.instance.startRingtone(incoming: false));
       await controller.startOutgoing(
         organizationId: organizationId,

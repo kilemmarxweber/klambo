@@ -10,6 +10,7 @@ import "package:klambo_messagerie/core/config.dart";
 import "package:klambo_messagerie/core/data_saver_prefs.dart";
 import "package:klambo_messagerie/core/l10n.dart";
 import "package:klambo_messagerie/core/notification_service.dart";
+import "package:klambo_messagerie/core/sound_service.dart";
 import "package:klambo_messagerie/core/theme_prefs.dart";
 import "package:klambo_messagerie/core/wallpaper_prefs.dart";
 import "package:klambo_messagerie/features/auth/phone_login_screen.dart";
@@ -160,8 +161,10 @@ class RootGate extends ConsumerStatefulWidget {
 class _RootGateState extends ConsumerState<RootGate> {
   bool _alertsArmed = false;
 
-  /// Active écoute arrière-plan + toutes les autorisations utiles dès l'accueil.
+  /// Active écoute arrière-plan + préchauffe audio (1er appel sortant).
   Future<void> _armAlerts() async {
+    // Prépare message + ringtone dès l'accueil (évite silence au 1er appel).
+    unawaited(SoundService.instance.warmUp());
     if (kIsWeb) return;
     await NotificationService.instance.requestPermissions();
     await BackgroundAlerts.start();

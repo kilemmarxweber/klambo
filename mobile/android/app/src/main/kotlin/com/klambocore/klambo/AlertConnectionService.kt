@@ -564,15 +564,23 @@ class AlertConnectionService : Service() {
         val title = event.optString("senderName").ifBlank {
             payload?.optString("senderName").orEmpty()
         }.ifBlank { "Klambocore" }
-        val rawBody = event.optString("body").ifBlank {
-            event.optString("bodyPreview").ifBlank {
-                payload?.optString("body").orEmpty()
-            }
-        }.ifBlank { "Nouveau message" }
+        val rawFull = event.optString("body").ifBlank {
+            payload?.optString("body").orEmpty()
+        }
+        val rawPreview = event.optString("bodyPreview").ifBlank {
+            payload?.optString("bodyPreview").orEmpty()
+        }
+        val rawBody = rawFull.ifBlank { rawPreview }.ifBlank { "Nouveau message" }
         if (rawBody.contains("Prêt à recevoir", ignoreCase = true)) return
-        // __CALL__:{json} → texte clair pour l'utilisateur.
-        val callLabel = callTraceLabel(rawBody)
-        val body = callLabel ?: rawBody
+        // __CALL__:{json} → texte clair pour tous les statuts (manqué / refusé / …).
+        val callLabel = callTraceLabel(rawFull) ?: callTraceLabel(rawPreview)
+        val body = when {
+            callLabel != null -> callLabel
+            rawBody.trimStart().startsWith("__CALL__:") -> "Appel"
+            else -> rawPreview.ifBlank { rawBody }.let { preview ->
+                callTraceLabel(preview) ?: preview
+            }
+        }
         val thread = event.optString("conversationId").ifBlank { title }
         val manager = getSystemService(NotificationManager::class.java)
         messageNotifIds[thread]?.let { manager.cancel(it) }
@@ -592,41 +600,84 @@ class AlertConnectionService : Service() {
         )
     }
 
-    /** Libellé humain pour `__CALL__:{…}` (manqué / annulé / refusé). */
+    /** Libellé humain pour `__CALL__:{…}` — jamais le JSON brut. */
     private fun callTraceLabel(body: String): String? {
         val trimmed = body.trim()
-        if (!trimmed.startsWith("__CALL__:")) return null
-        return try {
-            val json = JSONObject(trimmed.removePrefix("__CALL__:"))
-            val kind = json.optString("kind", "AUDIO")
-            val status = json.optString("status", "ENDED")
-            val endReason = json.optString("endReason", "")
-            val base = if (kind.equals("VIDEO", ignoreCase = true)) {
-                "Appel vidéo"
-            } else {
-                "Appel audio"
-            }
-            when {
-                status.equals("REJECTED", true) ||
-                    endReason == "rejected" ||
-                    endReason == "busy" -> "$base · refusé"
-                status.equals("MISSED", true) ||
-                    endReason == "missed" -> "$base · manqué"
-                endReason == "cancelled" ||
-                    (status.equals("ENDED", true) &&
-                        (endReason == "hangup" || endReason.isBlank()) &&
-                        json.optInt("durationMs", 0) <= 0) -> "$base · annulé"
-                json.optInt("durationMs", 0) > 0 -> {
-                    val total = json.optInt("durationMs", 0) / 1000
-                    val m = total / 60
-                    val s = total % 60
-                    "$base · $m:${s.toString().padStart(2, '0')}"
-                }
-                else -> base
-            }
-        } catch (_: Exception) {
-            "Appel"
+        if (trimmed.isEmpty) return null
+        val jsonSrc = when {
+            trimmed.startsWith("__CALL__:") -> trimmed.removePrefix("__CALL__:")
+            trimmed.startsWith("{") &&
+                (trimmed.contains("\"status\"") || trimmed.contains("\"endReason\"")) &&
+                (trimmed.contains("\"kind\"") || trimmed.contains("\"callId\"")) -> trimmed
+            else -> return null
         }
+        return try {
+            val json = JSONObject(jsonSrc)
+            callStatusLabel(
+                kind = json.optString("kind", "AUDIO"),
+                status = json.optString("status", "ENDED"),
+                endReason = json.optString("endReason", ""),
+                durationMs = json.optInt("durationMs", 0),
+            )
+        } catch (_: Exception) {
+            // JSON tronqué : extraire kind/status au mieux.
+            partialCallLabel(jsonSrc) ?: "Appel"
+        }
+    }
+
+    private fun callStatusLabel(
+        kind: String,
+        status: String,
+        endReason: String,
+        durationMs: Int,
+    ): String {
+        val base = if (kind.equals("VIDEO", ignoreCase = true)) {
+            "Appel vidéo"
+        } else {
+            "Appel audio"
+        }
+        val st = status.uppercase()
+        val reason = endReason.lowercase()
+        return when {
+            st == "REJECTED" || reason == "rejected" || reason == "busy" ->
+                "$base · refusé"
+            st == "MISSED" || reason == "missed" ->
+                "$base · manqué"
+            st == "RINGING" || st == "OFFER" || st == "INCOMING" ->
+                if (kind.equals("VIDEO", true)) "Appel vidéo entrant" else "Appel audio entrant"
+            reason == "cancelled" ||
+                (st == "ENDED" && (reason == "hangup" || reason.isBlank()) && durationMs <= 0) ->
+                "$base · annulé"
+            durationMs > 0 -> {
+                val total = durationMs / 1000
+                val m = total / 60
+                val s = total % 60
+                "$base · $m:${s.toString().padStart(2, '0')}"
+            }
+            st == "ENDED" || st == "HANGUP" || reason == "hangup" ->
+                "$base · terminé"
+            else -> base
+        }
+    }
+
+    private fun partialCallLabel(src: String): String? {
+        fun field(key: String): String? {
+            val m = Regex("\"$key\"\\s*:\\s*\"([^\"]*)\"", RegexOption.IGNORE_CASE)
+                .find(src)
+            return m?.groupValues?.getOrNull(1)
+        }
+        val kind = field("kind")
+        val status = field("status")
+        val endReason = field("endReason")
+        if (kind == null && status == null && endReason == null) return null
+        val duration = Regex("\"durationMs\"\\s*:\\s*(\\d+)", RegexOption.IGNORE_CASE)
+            .find(src)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+        return callStatusLabel(
+            kind = kind ?: "AUDIO",
+            status = status ?: "ENDED",
+            endReason = endReason ?: "",
+            durationMs = duration,
+        )
     }
 
     /** Accuse la rÃ©ception mÃªme quand Flutter est en arriÃ¨re-plan/verrouillÃ©. */
@@ -1165,28 +1216,36 @@ class AlertConnectionService : Service() {
         }
     }
 
+    /** Avatar parfaitement circulaire (coins transparents) pour largeIcon / Person. */
     private fun circleBitmap(source: Bitmap): Bitmap {
         val size = 192
-        val side = min(source.width, source.height)
+        val soft = if (source.config == Bitmap.Config.HARDWARE) {
+            source.copy(Bitmap.Config.ARGB_8888, false) ?: source
+        } else {
+            source
+        }
+        val side = min(soft.width, soft.height)
         val cropped = Bitmap.createBitmap(
-            source,
-            (source.width - side) / 2,
-            (source.height - side) / 2,
+            soft,
+            (soft.width - side) / 2,
+            (soft.height - side) / 2,
             side,
             side,
         )
+        if (soft !== source && soft !== cropped && !soft.isRecycled) soft.recycle()
         val scaled = if (cropped.width == size) {
             cropped
         } else {
             Bitmap.createScaledBitmap(cropped, size, size, true)
         }
-        if (scaled != cropped) cropped.recycle()
+        if (scaled != cropped && !cropped.isRecycled) cropped.recycle()
         val output = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(output)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        val radius = size / 2f
-        canvas.drawCircle(radius, radius, radius, paint)
-        paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
+        val path = android.graphics.Path().apply {
+            addCircle(size / 2f, size / 2f, size / 2f, android.graphics.Path.Direction.CW)
+        }
+        canvas.clipPath(path)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         canvas.drawBitmap(scaled, 0f, 0f, paint)
         if (!scaled.isRecycled) scaled.recycle()
         return output

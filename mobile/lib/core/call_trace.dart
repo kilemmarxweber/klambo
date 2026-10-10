@@ -44,28 +44,109 @@ class CallTraceInfo {
     return "$m min ${s.toString().padLeft(2, "0")} s";
   }
 
-  String get label {
-    final base = isVideo ? "Appel vidéo" : "Appel audio";
-    if (status == "REJECTED") return "$base · refusé";
-    if (status == "MISSED" || endReason == "missed") return "$base · manqué";
-    if (_cancelled) return "$base · annulé";
+  String get label => statusLabel(
+        kind: kind,
+        status: status,
+        endReason: endReason,
+        durationMs: durationMs,
+      );
+
+  /// Libellé clair pour tout statut d'appel (notif / liste / badge).
+  static String statusLabel({
+    required String kind,
+    required String status,
+    String? endReason,
+    int durationMs = 0,
+  }) {
+    final video = kind.toUpperCase() == "VIDEO";
+    final base = video ? "Appel vidéo" : "Appel audio";
+    final reason = (endReason ?? "").trim().toLowerCase();
+    final st = status.trim().toUpperCase();
+    if (st == "REJECTED" ||
+        reason == "rejected" ||
+        reason == "reject" ||
+        reason == "busy") {
+      return "$base · refusé";
+    }
+    if (st == "MISSED" || reason == "missed") return "$base · manqué";
+    if (st == "RINGING" || st == "OFFER" || st == "INCOMING") {
+      return video ? "Appel vidéo entrant" : "Appel audio entrant";
+    }
+    final cancelled = reason == "cancelled" ||
+        (reason == "hangup" && durationMs == 0 && st == "ENDED");
+    if (cancelled) return "$base · annulé";
     if (durationMs > 0) {
       final total = (durationMs / 1000).round();
       final m = total ~/ 60;
       final s = total % 60;
       return "$base · $m:${s.toString().padLeft(2, '0')}";
     }
+    if (st == "ENDED" || st == "HANGUP" || reason == "hangup") {
+      return "$base · terminé";
+    }
     return base;
   }
 
-  /// Texte notif / liste / badge — jamais le JSON `__CALL__:…`.
+  /// Texte notif / liste / badge — **jamais** le JSON `__CALL__:…`.
   static String previewOf(String? raw, {String fallback = "Appel"}) {
     final parsed = tryParse(raw);
     if (parsed != null) return parsed.label;
     final trimmed = raw?.trim() ?? "";
-    if (trimmed.startsWith(bodyPrefix)) return fallback;
     if (trimmed.isEmpty) return fallback;
+    // Tronqué / JSON partiel : extraire kind/status si possible.
+    if (looksLikeCallTrace(trimmed)) {
+      return _labelFromPartial(trimmed) ?? fallback;
+    }
     return trimmed;
+  }
+
+  /// True si le texte est (ou commence comme) une trace `__CALL__` / JSON d'appel.
+  static bool looksLikeCallTrace(String? raw) {
+    final t = raw?.trim() ?? "";
+    if (t.isEmpty) return false;
+    if (t.startsWith(bodyPrefix)) return true;
+    if (t.startsWith("{") &&
+        (t.contains('"kind"') || t.contains('"callId"')) &&
+        (t.contains('"status"') || t.contains('"endReason"'))) {
+      return true;
+    }
+    return false;
+  }
+
+  static String? _labelFromPartial(String raw) {
+    final src = raw.startsWith(bodyPrefix)
+        ? raw.substring(bodyPrefix.length)
+        : raw;
+    String? field(String key) {
+      final m = RegExp(
+        '"$key"\\s*:\\s*"([^"]*)"',
+        caseSensitive: false,
+      ).firstMatch(src);
+      return m?.group(1);
+    }
+
+    int duration() {
+      final m = RegExp(
+        r'"durationMs"\s*:\s*(\d+)',
+        caseSensitive: false,
+      ).firstMatch(src);
+      return int.tryParse(m?.group(1) ?? "") ?? 0;
+    }
+
+    final kind = field("kind") ?? "AUDIO";
+    final status = field("status") ?? "ENDED";
+    final endReason = field("endReason");
+    if (field("kind") == null &&
+        field("status") == null &&
+        field("endReason") == null) {
+      return null;
+    }
+    return statusLabel(
+      kind: kind,
+      status: status,
+      endReason: endReason,
+      durationMs: duration(),
+    );
   }
 
   bool get isMissedLike =>

@@ -208,5 +208,6 @@ int _unread(Map<String, dynamic> item) {
 
 String _humanizeInboxPreview(String raw) {
   if (raw.startsWith("k1.")) return raw;
-  return CallTraceInfo.previewOf(raw, fallback: raw);
+  // Jamais renvoyer le JSON __CALL__:… (même tronqué).
+  return CallTraceInfo.previewOf(raw);
 }

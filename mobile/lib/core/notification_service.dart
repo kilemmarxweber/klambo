@@ -1,4 +1,6 @@
 import "dart:async";
+import "dart:math" as math;
+import "dart:ui" as ui;
 
 import "package:app_badge_plus/app_badge_plus.dart";
 import "package:dio/dio.dart";
@@ -259,10 +261,77 @@ class NotificationService {
       if (data == null || data.length < 32 || data.length > 2000000) {
         return null;
       }
-      return Uint8List.fromList(data);
+      // PNG circulaire (coins transparents) pour largeIcon / Person Android.
+      return await _circleCropPng(Uint8List.fromList(data));
     } catch (_) {
       return null;
     }
+  }
+
+  /// Recadre en cercle 192×192 PNG — forme ronde dans la notif.
+  Future<Uint8List?> _circleCropPng(Uint8List bytes, {int size = 192}) async {
+    ui.Image? src;
+    ui.Image? out;
+    try {
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      src = frame.image;
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      final dst = Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble());
+      canvas.clipPath(Path()..addOval(dst));
+      final srcW = src.width.toDouble();
+      final srcH = src.height.toDouble();
+      final side = math.min(srcW, srcH);
+      final srcRect = Rect.fromLTWH(
+        (srcW - side) / 2,
+        (srcH - side) / 2,
+        side,
+        side,
+      );
+      canvas.drawImageRect(
+        src,
+        srcRect,
+        dst,
+        Paint()..isAntiAlias = true..filterQuality = FilterQuality.high,
+      );
+      final picture = recorder.endRecording();
+      out = await picture.toImage(size, size);
+      final bd = await out.toByteData(format: ui.ImageByteFormat.png);
+      return bd?.buffer.asUint8List();
+    } catch (_) {
+      return null;
+    } finally {
+      src?.dispose();
+      out?.dispose();
+    }
+  }
+
+  StyleInformation _messageStyle({
+    required String title,
+    required String body,
+    Uint8List? circleAvatar,
+  }) {
+    if (_isAndroid && circleAvatar != null && circleAvatar.isNotEmpty) {
+      final sender = Person(
+        name: title,
+        icon: ByteArrayAndroidIcon(circleAvatar),
+        important: true,
+      );
+      return MessagingStyleInformation(
+        const Person(name: "Moi"),
+        conversationTitle: title,
+        groupConversation: false,
+        messages: <Message>[
+          Message(body, DateTime.now(), sender),
+        ],
+      );
+    }
+    return BigTextStyleInformation(
+      body,
+      contentTitle: title,
+      summaryText: "Klambocore",
+    );
   }
 
   Future<void> showMessageNotification({
@@ -333,7 +402,7 @@ class NotificationService {
       payload: payload,
     );
 
-    // Avatar en arrière-plan (rafraîchit la notif si encore visible).
+    // Avatar circulaire en arrière-plan (rafraîchit la notif si encore visible).
     if (avatarUrl != null && avatarUrl.isNotEmpty) {
       unawaited(() async {
         final avatar = await _avatarBytes(avatarUrl);
@@ -353,10 +422,10 @@ class NotificationService {
                 priority: Priority.max,
                 category: AndroidNotificationCategory.message,
                 largeIcon: ByteArrayAndroidBitmap(avatar),
-                styleInformation: BigTextStyleInformation(
-                  body,
-                  contentTitle: title,
-                  summaryText: "Klambocore",
+                styleInformation: _messageStyle(
+                  title: title,
+                  body: body,
+                  circleAvatar: avatar,
                 ),
                 playSound: false,
                 enableVibration: false,
