@@ -58,6 +58,16 @@ class CallTraceInfo {
     return base;
   }
 
+  /// Texte notif / liste / badge — jamais le JSON `__CALL__:…`.
+  static String previewOf(String? raw, {String fallback = "Appel"}) {
+    final parsed = tryParse(raw);
+    if (parsed != null) return parsed.label;
+    final trimmed = raw?.trim() ?? "";
+    if (trimmed.startsWith(bodyPrefix)) return fallback;
+    if (trimmed.isEmpty) return fallback;
+    return trimmed;
+  }
+
   bool get isMissedLike =>
       status == "MISSED" ||
       status == "REJECTED" ||

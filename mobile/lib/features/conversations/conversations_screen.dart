@@ -1307,7 +1307,10 @@ class _ConversationsScreenState extends ConsumerState<ConversationsScreen> {
                                     satisfactionPreview?.preview ??
                                     notifyPreview?.preview ??
                                     callPreview?.label ??
-                                    previewRaw;
+                                    CallTraceInfo.previewOf(
+                                      previewRaw,
+                                      fallback: previewRaw,
+                                    );
                                 final needsSatisfaction =
                                     (satisfactionPreview?.pendingCount ?? 0) > 0;
                                 final lastAt = last is Map

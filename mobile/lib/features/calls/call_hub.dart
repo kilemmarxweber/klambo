@@ -517,15 +517,41 @@ class CallHub {
       p["sender"] is Map ? (p["sender"] as Map)["image"] : null,
       event["sender"] is Map ? (event["sender"] as Map)["image"] : null,
     ]);
-    final rawBody = event["bodyPreview"]?.toString() ??
-        event["body"]?.toString() ??
+    final rawBody = event["body"]?.toString() ??
+        event["bodyPreview"]?.toString() ??
         p["body"]?.toString() ??
         p["text"]?.toString() ??
         "Nouveau message";
+    final callTrace = CallTraceInfo.tryParse(rawBody);
+    if (callTrace != null) {
+      final callId = callTrace.callId?.trim() ?? "";
+      if (callId.isNotEmpty) {
+        rememberIncomingMessage(callId);
+        rememberIncomingMessage("calltrace-$callId");
+      }
+      // Notif avec texte clair (jamais le JSON __CALL__:…).
+      final clearBody = callTrace.label;
+      final messageId = _firstId([
+        p["id"],
+        p["messageId"],
+        event["messageId"],
+        if (callId.isNotEmpty) "calltrace-$callId",
+      ]);
+      await alertIncomingMessage(
+        dedupeKey: messageId ??
+            "${conversationId ?? ""}|call|${callTrace.status}|$clearBody",
+        aliasKey: callId.isNotEmpty ? callId : null,
+        title: senderName,
+        body: clearBody,
+        avatarUrl: avatarUrl,
+        conversationId: conversationId,
+        organizationId: organizationId,
+      );
+      return;
+    }
     final body = NotifyTrace.tryParse(rawBody)?.preview ??
         SatisfactionTrace.tryParse(rawBody)?.preview ??
-        CallTraceInfo.tryParse(rawBody)?.label ??
-        rawBody;
+        CallTraceInfo.previewOf(rawBody, fallback: rawBody);
     final messageId = _firstId([
       p["id"],
       p["messageId"],
@@ -584,18 +610,32 @@ class CallHub {
       return;
     }
     final callId = call.callId.trim();
-    final dedupe = callId.isNotEmpty ? callId : "$conversationId|${trace.toBody()}";
-    if (!_publishedCallTraces.add(dedupe)) return;
-    if (_publishedCallTraces.length > 200) {
+    // Une seule bulle par callId (hangup local + echo peer / timeout).
+    final dedupeKeys = <String>[
+      if (callId.isNotEmpty) callId,
+      if (callId.isNotEmpty) "calltrace-$callId",
+      "$conversationId|${trace.kind}|${trace.status}|${trace.endReason ?? ""}",
+    ];
+    if (dedupeKeys.any(_publishedCallTraces.contains)) {
+      debugPrint("[hub] call trace déjà publiée — ignorée ($callId)");
+      return;
+    }
+    for (final key in dedupeKeys) {
+      _publishedCallTraces.add(key);
+    }
+    while (_publishedCallTraces.length > 200) {
       _publishedCallTraces.remove(_publishedCallTraces.first);
     }
 
     final body = trace.toBody();
-    final messageId =
-        callId.isNotEmpty ? "calltrace-$callId" : "calltrace-${DateTime.now().millisecondsSinceEpoch}";
+    final clearPreview = trace.label;
+    final messageId = callId.isNotEmpty
+        ? "calltrace-$callId"
+        : "calltrace-${DateTime.now().millisecondsSinceEpoch}";
     // Appelant → bulle à droite ; sinon (manqué entrant / refus) → côté peer.
     final senderId = call.isCaller ? localUserId : call.peerUserId;
     rememberIncomingMessage(messageId);
+    if (callId.isNotEmpty) rememberIncomingMessage(callId);
     if (_messageController.isClosed) return;
     _messageController.add({
       "type": "message.created",
@@ -604,11 +644,12 @@ class CallHub {
       "messageId": messageId,
       "senderId": senderId,
       "body": body,
-      "bodyPreview": body,
+      // Liste / notif / badge : texte humain, pas le JSON.
+      "bodyPreview": clearPreview,
       "createdAt": DateTime.now().toUtc().toIso8601String(),
       if (call.peerName != null && !call.isCaller) "senderName": call.peerName,
     });
-    debugPrint("[hub] call trace → chat: ${trace.label}");
+    debugPrint("[hub] call trace → chat: $clearPreview");
   }
 
   /// Son (et notif si on n'est pas dans le fil) pour un message reçu.

@@ -1,3 +1,5 @@
+import "package:klambo_messagerie/core/call_trace.dart";
+
 /// Liste et fil : une lecture complète, puis l'écoute.
 ///
 /// Même filet que le fil ouvert : le WS peut être « up » sans Redis, donc
@@ -65,13 +67,16 @@ InboxEventEffect applyInboxEvent({
 
   item["updatedAt"] = at;
   final cipher = event["bodyCipher"]?.toString() ?? "";
+  final rawPreview = cipher.startsWith("k1.")
+      ? cipher
+      : (event["bodyPreview"]?.toString() ??
+          event["body"]?.toString() ??
+          "");
+  // Aperçu liste / badge : libellé d'appel clair, jamais __CALL__:{…}.
+  final previewBody = _humanizeInboxPreview(rawPreview);
   item["lastMessage"] = {
     "id": event["messageId"],
-    "body": cipher.startsWith("k1.")
-        ? cipher
-        : (event["bodyPreview"]?.toString() ??
-            event["body"]?.toString() ??
-            ""),
+    "body": previewBody,
     "senderId": senderId,
     "senderName": event["senderName"],
     "senderImage": event["senderImage"],
@@ -199,4 +204,9 @@ int _unread(Map<String, dynamic> item) {
   if (raw is int) return raw;
   if (raw is num) return raw.toInt();
   return int.tryParse(raw?.toString() ?? "") ?? 0;
+}
+
+String _humanizeInboxPreview(String raw) {
+  if (raw.startsWith("k1.")) return raw;
+  return CallTraceInfo.previewOf(raw, fallback: raw);
 }

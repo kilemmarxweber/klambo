@@ -429,14 +429,15 @@ class AlertConnectionService : Service() {
         val title = event.optString("senderName").ifBlank {
             payload?.optString("senderName").orEmpty()
         }.ifBlank { "Klambocore" }
-        val body = event.optString("bodyPreview").ifBlank {
-            event.optString("body").ifBlank {
+        val rawBody = event.optString("body").ifBlank {
+            event.optString("bodyPreview").ifBlank {
                 payload?.optString("body").orEmpty()
             }
         }.ifBlank { "Nouveau message" }
-        // Traces d'appel locales / techniques : pas de notif utilisateur.
-        if (body.trim().startsWith("__CALL__:")) return
-        if (body.contains("Prêt à recevoir", ignoreCase = true)) return
+        if (rawBody.contains("Prêt à recevoir", ignoreCase = true)) return
+        // __CALL__:{json} → texte clair pour l'utilisateur.
+        val callLabel = callTraceLabel(rawBody)
+        val body = callLabel ?: rawBody
         val thread = event.optString("conversationId").ifBlank { title }
         val manager = getSystemService(NotificationManager::class.java)
         messageNotifIds[thread]?.let { manager.cancel(it) }
@@ -451,9 +452,46 @@ class AlertConnectionService : Service() {
             title,
             body,
             soundsOn(),
-            call = false,
+            call = callLabel != null,
             avatar = avatarBitmap(image),
         )
+    }
+
+    /** Libellé humain pour `__CALL__:{…}` (manqué / annulé / refusé). */
+    private fun callTraceLabel(body: String): String? {
+        val trimmed = body.trim()
+        if (!trimmed.startsWith("__CALL__:")) return null
+        return try {
+            val json = JSONObject(trimmed.removePrefix("__CALL__:"))
+            val kind = json.optString("kind", "AUDIO")
+            val status = json.optString("status", "ENDED")
+            val endReason = json.optString("endReason", "")
+            val base = if (kind.equals("VIDEO", ignoreCase = true)) {
+                "Appel vidéo"
+            } else {
+                "Appel audio"
+            }
+            when {
+                status.equals("REJECTED", true) ||
+                    endReason == "rejected" ||
+                    endReason == "busy" -> "$base · refusé"
+                status.equals("MISSED", true) ||
+                    endReason == "missed" -> "$base · manqué"
+                endReason == "cancelled" ||
+                    (status.equals("ENDED", true) &&
+                        (endReason == "hangup" || endReason.isBlank()) &&
+                        json.optInt("durationMs", 0) <= 0) -> "$base · annulé"
+                json.optInt("durationMs", 0) > 0 -> {
+                    val total = json.optInt("durationMs", 0) / 1000
+                    val m = total / 60
+                    val s = total % 60
+                    "$base · $m:${s.toString().padStart(2, '0')}"
+                }
+                else -> base
+            }
+        } catch (_: Exception) {
+            "Appel"
+        }
     }
 
     /** Accuse la rÃ©ception mÃªme quand Flutter est en arriÃ¨re-plan/verrouillÃ©. */
