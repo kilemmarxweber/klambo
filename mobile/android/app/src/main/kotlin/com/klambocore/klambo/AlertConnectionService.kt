@@ -603,7 +603,7 @@ class AlertConnectionService : Service() {
     /** Libellé humain pour `__CALL__:{…}` — jamais le JSON brut. */
     private fun callTraceLabel(body: String): String? {
         val trimmed = body.trim()
-        if (trimmed.isEmpty) return null
+        if (trimmed.isEmpty()) return null
         val jsonSrc = when {
             trimmed.startsWith("__CALL__:") -> trimmed.removePrefix("__CALL__:")
             trimmed.startsWith("{") &&
@@ -914,8 +914,7 @@ class AlertConnectionService : Service() {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP or
                 Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                Intent.FLAG_ACTIVITY_INCLUDE_STOPPED_PACKAGES
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
             putExtra(EXTRA_CALL, raw)
             putExtra(EXTRA_ACCEPT, accept)
         }
