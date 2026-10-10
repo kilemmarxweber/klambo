@@ -465,8 +465,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final messageIds = _eventMessageIds(event, update);
       final eventStatus = _eventDeliveryStatus(event, update);
       if (reason == "delivered" || reason == "received") {
-        for (final messageId in messageIds) {
-          _setMessageDeliveryStatus(messageId, "DELIVERED");
+        if (messageIds.isEmpty) {
+          // delivered/received sans ids → tous mes SENT (B actif a ack).
+          _markMineDelivered();
+        } else {
+          for (final messageId in messageIds) {
+            _setMessageDeliveryStatus(messageId, "DELIVERED");
+          }
         }
       }
       if (reason == "read" &&
@@ -518,11 +523,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         type == "message.read") {
       if (convId != null && convId != widget.conversationId) return;
       final messageIds = _eventMessageIds(event, payload);
-      for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
-        _setMessageDeliveryStatus(
-          messageId,
-          type == "message.read" ? "READ" : "DELIVERED",
-        );
+      if (type == "message.read") {
+        for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
+          _setMessageDeliveryStatus(messageId, "READ");
+        }
+      } else if (messageIds.isEmpty) {
+        // delivered/received sans ids → tous mes SENT (B actif a ack).
+        _markMineDelivered();
+      } else {
+        for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
+          _setMessageDeliveryStatus(messageId, "DELIVERED");
+        }
       }
       return;
     }
@@ -572,17 +583,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _setMessageDeliveryStatus(String messageId, String status) {
-    if (!mounted) return;
+    if (!mounted || messageId.isEmpty) return;
     final normalizedStatus = status.trim().toUpperCase();
-    final index = _messages.indexWhere(
-      (raw) => raw is Map && raw["id"]?.toString() == messageId,
-    );
+    final index = _messages.indexWhere((raw) {
+      if (raw is! Map) return false;
+      if (raw["id"]?.toString() == messageId) return true;
+      // Filet : ack peut arriver avec clientMessageId.
+      return raw["clientMessageId"]?.toString() == messageId;
+    });
     if (index < 0) return;
     final raw = _messages[index];
     if (raw is! Map) return;
     final current = raw["deliveryStatus"]?.toString().trim().toUpperCase();
     final currentRank = _deliveryStatusRank(current);
     final nextRank = _deliveryStatusRank(normalizedStatus);
+    if (nextRank <= 0) return;
     if (currentRank >= nextRank && currentRank > 0) return;
     setState(() {
       final updated = Map<String, dynamic>.from(raw);
@@ -591,13 +606,49 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     });
   }
 
+  /// delivered/received sans ids → tous mes SENT deviennent DELIVERED.
+  void _markMineDelivered() {
+    if (!mounted) return;
+    final me = ref.read(sessionProvider).me?["user"];
+    final myId = me is Map ? me["id"]?.toString() : null;
+    if (myId == null) return;
+    var changed = false;
+    final next = <dynamic>[];
+    for (final raw in _messages) {
+      if (raw is! Map) {
+        next.add(raw);
+        continue;
+      }
+      if (raw["senderId"]?.toString() != myId || raw["pending"] == true) {
+        next.add(raw);
+        continue;
+      }
+      final rank = _deliveryStatusRank(raw["deliveryStatus"]);
+      if (rank >= 2) {
+        next.add(raw);
+        continue;
+      }
+      final updated = Map<String, dynamic>.from(raw);
+      updated["deliveryStatus"] = "DELIVERED";
+      next.add(updated);
+      changed = true;
+    }
+    if (changed) setState(() => _messages = next);
+  }
+
   Set<String> _eventMessageIds(Object? primary, [Object? secondary]) {
     final ids = <String>{};
     for (final source in [primary, secondary]) {
       if (source is! Map) continue;
       final many = source["messageIds"] ?? source["message_ids"];
       if (many is List) ids.addAll(many.map((id) => id.toString()));
-      for (final key in ["messageId", "message_id", "id"]) {
+      for (final key in [
+        "messageId",
+        "message_id",
+        "id",
+        "clientMessageId",
+        "client_message_id",
+      ]) {
         final value = source[key]?.toString();
         if (value != null && value.isNotEmpty) ids.add(value);
       }
@@ -861,7 +912,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         );
         if (oldStatus > newStatus) {
           final merged = Map<String, dynamic>.from(incomingMessage);
-          merged["deliveryStatus"] = oldStatus >= 3 ? "READ" : "DELIVERED";
+          // Préserver le statut local (SENT/DELIVERED/READ), pas upgrader SENT→DELIVERED.
+          final localStatus =
+              m["deliveryStatus"]?.toString().trim().toUpperCase();
+          merged["deliveryStatus"] =
+              (localStatus != null && localStatus.isNotEmpty)
+                  ? localStatus
+                  : _deliveryStatusLabel(oldStatus);
           byId[id] = merged;
         }
       }
@@ -947,6 +1004,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       default:
         return 0;
     }
+  }
+
+  String _deliveryStatusLabel(int rank) {
+    if (rank >= 3) return "READ";
+    if (rank >= 2) return "DELIVERED";
+    if (rank >= 1) return "SENT";
+    return "SENT";
   }
 
   @override
