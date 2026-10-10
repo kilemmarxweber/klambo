@@ -10,7 +10,6 @@ import "package:klambo_messagerie/core/config.dart";
 import "package:klambo_messagerie/core/data_saver_prefs.dart";
 import "package:klambo_messagerie/core/l10n.dart";
 import "package:klambo_messagerie/core/notification_service.dart";
-import "package:klambo_messagerie/core/sound_service.dart";
 import "package:klambo_messagerie/core/theme_prefs.dart";
 import "package:klambo_messagerie/core/wallpaper_prefs.dart";
 import "package:klambo_messagerie/features/auth/phone_login_screen.dart";
@@ -79,38 +78,12 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     NotificationService.instance.setLifecycle(state);
     final hub = ref.read(callHubProvider);
-    // `inactive` est trop bruyant (Chrome / focus) — on ne coupe pas le WS.
-    // `paused` / `hidden` = vraie sortie du premier plan.
+    // Verrouillé / arrière-plan : le service natif garde l'écoute WS + présence.
     if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.hidden) {
-      // Pause reconnect Flutter ; FGS = filet (appels / interim avant FCM).
-      hub?.onAppBackgrounded();
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.inactive) {
       unawaited(BackgroundAlerts.touch());
-      if (hub != null) {
-        final phase = hub.controller.phase;
-        final inCall = phase == CallPhase.connecting ||
-            phase == CallPhase.active ||
-            phase == CallPhase.ringingIn ||
-            phase == CallPhase.ringingOut;
-        unawaited(BackgroundAlerts.ensureAlive());
-        if (inCall) {
-          final peer = hub.controller.active?.peerName?.trim();
-          unawaited(
-            BackgroundAlerts.setCallOngoing(
-              name: (peer != null && peer.isNotEmpty) ? peer : "Klambo",
-              video: hub.controller.active?.kind == "VIDEO",
-            ),
-          );
-        } else {
-          // Filet messaging tant que FCM n'est pas branché (pushToken stub).
-          final orgId = hub.presence.organizationId;
-          if (orgId != null && orgId.isNotEmpty) {
-            unawaited(hub.touchPresence());
-          }
-        }
-      }
-    } else if (state == AppLifecycleState.inactive) {
-      unawaited(BackgroundAlerts.touch());
+      unawaited(BackgroundAlerts.ensureAlive());
       if (hub != null &&
           (hub.controller.phase == CallPhase.connecting ||
               hub.controller.phase == CallPhase.active)) {
@@ -121,16 +94,22 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
             video: hub.controller.active?.kind == "VIDEO",
           ),
         );
+      } else if (hub != null) {
+        // Dernier heartbeat Flutter avant gel — le service natif prend le relais.
+        final orgId = hub.presence.organizationId;
+        if (orgId != null && orgId.isNotEmpty) {
+          unawaited(hub.touchPresence());
+        }
       }
     }
     if (state == AppLifecycleState.resumed) {
       unawaited(BackgroundAlerts.touch());
-      // Revalide les réglages système encore manquants (sans re-popup micro/caméra).
-      unawaited(BackgroundAlerts.requestAllPrivileges(runtime: false));
+      unawaited(BackgroundAlerts.ensureAlive());
       if (hub != null) {
-        // WS reconnect + sync.resume → inbox / fil rattrapent via HTTP.
-        hub.onAppResumed();
         unawaited(hub.consumeNativeCall());
+        if (!hub.socket.isConnected) {
+          hub.socket.reconnectNow();
+        }
         final orgId = hub.presence.organizationId;
         if (orgId != null && orgId.isNotEmpty) {
           unawaited(hub.touchPresence());
@@ -140,14 +119,11 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
           ));
         }
       }
-      // FGS utile surtout pour les appels ; on le maintient vivant si déjà armé.
-      unawaited(BackgroundAlerts.ensureAlive());
     }
     // Uniquement kill process / detach — pas `hidden` (Chrome le tire souvent
     // et coupait l'appel + disposait le media en plein ring).
     if (state == AppLifecycleState.detached) {
-      hub?.onAppBackgrounded();
-      // Filet natif tant que FCM n'est pas en prod (sinon messages / appels perdus).
+      // Ne coupe PAS le service Android : il doit continuer à écouter.
       unawaited(BackgroundAlerts.ensureAlive());
       if (hub != null) {
         unawaited(hub.onAppClosing());
@@ -182,15 +158,16 @@ class RootGate extends ConsumerStatefulWidget {
 class _RootGateState extends ConsumerState<RootGate> {
   bool _alertsArmed = false;
 
-  /// Arme le filet Android (appels + interim messaging) + préchauffe audio.
+  /// Active le son système dès l'ouverture, sans écran de réglages.
+  /// Android 13+ affiche une seule fois la demande système des notifications.
   Future<void> _armAlerts() async {
-    // Prépare message + ringtone dès l'accueil (évite silence au 1er appel).
-    unawaited(SoundService.instance.warmUp());
     if (kIsWeb) return;
-    await NotificationService.instance.requestPermissions();
-    // FGS : nécessaire pour appels ; messaging jusqu'à branchement FCM.
+    final allowed =
+        await NotificationService.instance.areNotificationsAllowed();
+    if (!allowed) {
+      await NotificationService.instance.requestPermissions();
+    }
     await BackgroundAlerts.start();
-    await BackgroundAlerts.requestAllPrivileges();
   }
 
   @override

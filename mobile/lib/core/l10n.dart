@@ -419,8 +419,7 @@ class L10n {
         "last seen $day",
         "visto $day",
       );
-  String get yesterday => _t("Hier", "Yesterday", "Ontem");
-  String get today => _t("Aujourd'hui", "Today", "Hoje");
+  String get yesterday => _t("hier", "yesterday", "ontem");
 
   String get videoCall =>
       _t("Appel vidéo", "Video call", "Chamada de vídeo");
