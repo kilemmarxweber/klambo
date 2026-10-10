@@ -2443,14 +2443,51 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       final newer = realIndex < _messages.length - 1
                           ? _messages[realIndex + 1] as Map
                           : null;
-                      final sameAsOlder = older != null &&
-                          older["senderId"]?.toString() ==
-                              msg["senderId"]?.toString();
-                      final sameAsNewer = newer != null &&
-                          newer["senderId"]?.toString() ==
-                              msg["senderId"]?.toString();
                       final attachments =
                           (msg["attachments"] as List?) ?? const [];
+                      final createdAt = msg["createdAt"]?.toString();
+                      // Rupture de jour = 1er message du jour civil (vs message précédent).
+                      final showDaySep = older == null ||
+                          !sameCalendarDay(
+                            createdAt,
+                            older["createdAt"]?.toString(),
+                          );
+                      // Ne pas coller les bulles à travers une pastille de date.
+                      final sameAsOlder = older != null &&
+                          older["senderId"]?.toString() ==
+                              msg["senderId"]?.toString() &&
+                          !showDaySep;
+                      final sameAsNewer = newer != null &&
+                          newer["senderId"]?.toString() ==
+                              msg["senderId"]?.toString() &&
+                          sameCalendarDay(
+                            createdAt,
+                            newer["createdAt"]?.toString(),
+                          );
+                      final dayLabel = showDaySep
+                          ? formatChatDaySeparatorIso(
+                              createdAt,
+                              todayLabel: l10n.today,
+                              yesterdayLabel: l10n.yesterday,
+                              locale: l10n.lang.code,
+                            )
+                          : null;
+                      Widget withDaySep(Widget child) {
+                        if (dayLabel == null || dayLabel.isEmpty) {
+                          return child;
+                        }
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _ChatDaySeparator(label: dayLabel),
+                            child,
+                          ],
+                        );
+                      }
+                      final bubbleTime = () {
+                        final d = DateTime.tryParse(createdAt ?? "");
+                        return d == null ? "" : formatClock(d);
+                      }();
 
                       final edited = msg["editedAt"] != null;
                       final deleted = _messageIsDeleted(msg);
@@ -2462,7 +2499,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       final satisfactionTrace =
                           deleted ? null : SatisfactionTrace.tryParse(body);
                       if (satisfactionTrace != null) {
-                        return Padding(
+                        return withDaySep(Padding(
                           padding: const EdgeInsets.symmetric(vertical: 6),
                           child: Center(
                             child: ConstrainedBox(
@@ -2511,7 +2548,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               ),
                             ),
                           ),
-                        );
+                        ));
                       }
                       final notifyTrace =
                           deleted ? null : NotifyTrace.tryParse(body);
@@ -2520,7 +2557,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             msgId.isNotEmpty &&
                             !msgId.startsWith("local-") &&
                             notifyTrace.suggestsOfficialAck;
-                        return Padding(
+                        return withDaySep(Padding(
                           padding: const EdgeInsets.symmetric(vertical: 6),
                           child: Align(
                             alignment: mine
@@ -2543,14 +2580,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               ),
                             ),
                           ),
-                        );
+                        ));
                       }
                       final callTrace =
                           deleted ? null : CallTraceInfo.tryParse(body);
                       final replyTo = msg["replyTo"];
                       final replyDeleted = replyTo is Map &&
                           replyTo["deletedAt"] != null;
-                      return _SwipeToReply(
+                      return withDaySep(_SwipeToReply(
                         enabled: !deleted &&
                             !_selectionMode &&
                             !_composerBlocked &&
@@ -2596,9 +2633,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               Expanded(
                                 child: _MessageBubble(
                                   body: body,
-                                  time: formatMessageTime(
-                                    msg["createdAt"]?.toString(),
-                                  ),
+                                  time: bubbleTime,
                                   mine: mine,
                                   deliveryStatus: mine
                                       ? messageDeliveryStatus(
@@ -2656,7 +2691,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           ),
                         ),
                         ),
-                      );
+                      ));
                     },
                   ),
                     ),
@@ -3048,6 +3083,52 @@ class _SwipeToReplyState extends State<_SwipeToReply>
             child: widget.child,
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Pastille centrée : rupture de jour dans le fil (Aujourd'hui / Hier / date).
+class _ChatDaySeparator extends StatelessWidget {
+  const _ChatDaySeparator({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Center(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: isDark
+                ? const Color(0xE61F2C34)
+                : const Color(0xE6E7E4DE),
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: isDark ? 0.25 : 0.06),
+                blurRadius: 2,
+                offset: const Offset(0, 1),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
+                color: isDark
+                    ? const Color(0xFFD1D7DB)
+                    : const Color(0xFF54656F),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
