@@ -610,21 +610,19 @@ class CallHub {
       return;
     }
     final callId = call.callId.trim();
-    // Une seule bulle par callId (hangup local + echo peer / timeout).
-    final dedupeKeys = <String>[
-      if (callId.isNotEmpty) callId,
-      if (callId.isNotEmpty) "calltrace-$callId",
-      "$conversationId|${trace.kind}|${trace.status}|${trace.endReason ?? ""}",
-    ];
-    if (dedupeKeys.any(_publishedCallTraces.contains)) {
-      debugPrint("[hub] call trace déjà publiée — ignorée ($callId)");
-      return;
-    }
-    for (final key in dedupeKeys) {
-      _publishedCallTraces.add(key);
-    }
-    while (_publishedCallTraces.length > 200) {
-      _publishedCallTraces.remove(_publishedCallTraces.first);
+    // Dédup uniquement par callId (hangup local + echo). Ne jamais utiliser
+    // conversation|kind|status : deux appels distincts au même statut seraient
+    // incorrectement fusionnés.
+    if (callId.isNotEmpty) {
+      final dedupeKeys = <String>[callId, "calltrace-$callId"];
+      if (dedupeKeys.any(_publishedCallTraces.contains)) {
+        debugPrint("[hub] call trace déjà publiée — ignorée ($callId)");
+        return;
+      }
+      _publishedCallTraces.addAll(dedupeKeys);
+      while (_publishedCallTraces.length > 200) {
+        _publishedCallTraces.remove(_publishedCallTraces.first);
+      }
     }
 
     final body = trace.toBody();
