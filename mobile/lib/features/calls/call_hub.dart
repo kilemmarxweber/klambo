@@ -106,12 +106,16 @@ class CallHub {
     unawaited(identity.ensureRegistered());
     _bindCallKit();
     unawaited(_registerPushToken());
+    BackgroundAlerts.onNativeIncomingCall = () {
+      unawaited(consumeNativeCall());
+    };
     unawaited(
       Future<void>.delayed(const Duration(milliseconds: 400), consumeNativeCall),
     );
     controller.addListener(_onCallPhaseChanged);
     controller.onIncomingRing = (_) {
       unawaited(_alertIncomingCall());
+      // Ouvre immédiatement la page accepter / refuser.
       showCallScreen();
     };
     controller.onCallEnded = _publishCallTrace;
@@ -277,12 +281,19 @@ class CallHub {
     }
     if (decoded is! Map) return;
     await controller.handleIncomingOffer(Map<String, dynamic>.from(decoded));
+    // Toujours pousser l'écran d'appel (même si déjà ringingIn).
+    if (controller.phase == CallPhase.ringingIn ||
+        controller.phase == CallPhase.connecting ||
+        controller.phase == CallPhase.active) {
+      showCallScreen();
+    }
     if (shouldAutoAcceptNative(
       requested: pending["autoAccept"] == true,
       ringingIn: controller.phase == CallPhase.ringingIn,
     )) {
       await controller.acceptIncoming();
     }
+    unawaited(BackgroundAlerts.stopNativeRing());
   }
 
   void _watchNetwork() {
@@ -401,9 +412,18 @@ class CallHub {
 
     final type = event["type"]?.toString() ?? "";
 
-    if (type == "call.offer" &&
-        event["toUserId"]?.toString() == localUserId) {
-      unawaited(_alertIncomingCall());
+    if (type == "call.offer") {
+      final to = event["toUserId"]?.toString();
+      final from = event["fromUserId"]?.toString();
+      final forMe = from != localUserId &&
+          (to == null || to.isEmpty || to == "null" || to == localUserId);
+      if (forMe) {
+        unawaited(_alertIncomingCall());
+        // Filet : si le contrôleur n'a pas encore basculé, forcer l'UI.
+        if (controller.phase == CallPhase.ringingIn) {
+          showCallScreen();
+        }
+      }
       return;
     }
 
@@ -517,41 +537,15 @@ class CallHub {
       p["sender"] is Map ? (p["sender"] as Map)["image"] : null,
       event["sender"] is Map ? (event["sender"] as Map)["image"] : null,
     ]);
-    final rawBody = event["body"]?.toString() ??
-        event["bodyPreview"]?.toString() ??
+    final rawBody = event["bodyPreview"]?.toString() ??
+        event["body"]?.toString() ??
         p["body"]?.toString() ??
         p["text"]?.toString() ??
         "Nouveau message";
-    final callTrace = CallTraceInfo.tryParse(rawBody);
-    if (callTrace != null) {
-      final callId = callTrace.callId?.trim() ?? "";
-      if (callId.isNotEmpty) {
-        rememberIncomingMessage(callId);
-        rememberIncomingMessage("calltrace-$callId");
-      }
-      // Notif avec texte clair (jamais le JSON __CALL__:…).
-      final clearBody = callTrace.label;
-      final messageId = _firstId([
-        p["id"],
-        p["messageId"],
-        event["messageId"],
-        if (callId.isNotEmpty) "calltrace-$callId",
-      ]);
-      await alertIncomingMessage(
-        dedupeKey: messageId ??
-            "${conversationId ?? ""}|call|${callTrace.status}|$clearBody",
-        aliasKey: callId.isNotEmpty ? callId : null,
-        title: senderName,
-        body: clearBody,
-        avatarUrl: avatarUrl,
-        conversationId: conversationId,
-        organizationId: organizationId,
-      );
-      return;
-    }
     final body = NotifyTrace.tryParse(rawBody)?.preview ??
         SatisfactionTrace.tryParse(rawBody)?.preview ??
-        CallTraceInfo.previewOf(rawBody, fallback: rawBody);
+        CallTraceInfo.tryParse(rawBody)?.label ??
+        rawBody;
     final messageId = _firstId([
       p["id"],
       p["messageId"],
@@ -614,8 +608,7 @@ class CallHub {
     final messageId = callId.isNotEmpty
         ? "calltrace-$callId"
         : "calltrace-${DateTime.now().millisecondsSinceEpoch}";
-    // Avec callId : dédup stricte. Sans callId : fenêtre 3 s (echo hangup),
-    // sans bloquer deux vrais appels espacés (pas de clé sticky kind|status).
+    // Avec callId : une bulle. Sans : fenêtre 3 s (echo hangup), pas sticky status.
     final dedupeKeys = callId.isNotEmpty
         ? <String>[callId, "calltrace-$callId", messageId]
         : <String>[
@@ -646,7 +639,6 @@ class CallHub {
       "messageId": messageId,
       "senderId": senderId,
       "body": body,
-      // Liste / notif / badge : texte humain, pas le JSON.
       "bodyPreview": clearPreview,
       "createdAt": DateTime.now().toUtc().toIso8601String(),
       if (call.peerName != null && !call.isCaller) "senderName": call.peerName,
@@ -731,12 +723,17 @@ class CallHub {
     final phase = controller.phase;
     final mediaCall =
         phase == CallPhase.connecting || phase == CallPhase.active;
+    // Sonnerie entrante : aussi par-dessus le verrou + allumer l'écran.
+    final holdLockScreen = phase == CallPhase.ringingIn || mediaCall;
     final callInProgress = phase == CallPhase.ringingIn ||
         phase == CallPhase.ringingOut ||
         mediaCall;
-    if (_lockscreenCallVisible != mediaCall) {
-      _lockscreenCallVisible = mediaCall;
-      unawaited(setLockScreenVisible(mediaCall));
+    if (_lockscreenCallVisible != holdLockScreen) {
+      _lockscreenCallVisible = holdLockScreen;
+      unawaited(setLockScreenVisible(holdLockScreen));
+    }
+    if (phase == CallPhase.ringingIn) {
+      showCallScreen();
     }
     if (callInProgress) {
       final peer = controller.active?.peerName?.trim();
@@ -866,21 +863,31 @@ class CallHub {
     if (controller.isDisposed || !controller.isBusy) return;
     FocusManager.instance.primaryFocus?.unfocus();
     controller.setMinimized(false);
-    final nav = navigatorKey.currentState;
-    if (nav == null) return;
-    var visible = false;
-    nav.popUntil((route) {
-      visible = route.settings.name == "/call";
-      return true;
-    });
-    if (visible) return;
-    nav.push(
-      MaterialPageRoute(
-        settings: const RouteSettings(name: "/call"),
-        fullscreenDialog: true,
-        builder: (_) => CallScreen(controller: controller),
-      ),
-    );
+    void attempt([int tries = 0]) {
+      if (controller.isDisposed || !controller.isBusy) return;
+      final nav = navigatorKey.currentState;
+      if (nav == null) {
+        if (tries < 20) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => attempt(tries + 1));
+        }
+        return;
+      }
+      var visible = false;
+      nav.popUntil((route) {
+        visible = route.settings.name == "/call";
+        return true;
+      });
+      if (visible) return;
+      nav.push(
+        MaterialPageRoute(
+          settings: const RouteSettings(name: "/call"),
+          fullscreenDialog: true,
+          builder: (_) => CallScreen(controller: controller),
+        ),
+      );
+    }
+
+    attempt();
   }
 
   void dispose() {
@@ -895,6 +902,7 @@ class CallHub {
     _callPollTimer = null;
     controller.removeListener(_onCallPhaseChanged);
     controller.onIncomingRing = null;
+    BackgroundAlerts.onNativeIncomingCall = null;
     unawaited(SoundService.instance.stopRingtone());
     unawaited(NotificationService.instance.cancelIncomingCallNotification());
     // Teardown synchrone pour éviter crash WebRTC au balayage / dispose.

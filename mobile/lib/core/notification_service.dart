@@ -85,7 +85,15 @@ class NotificationService {
     await _plugin.initialize(
       settings: initSettings,
       onDidReceiveNotificationResponse: (response) {
-        _dispatchTap(response.payload);
+        final action = response.actionId;
+        final payload = response.payload;
+        if (action == "decline") {
+          // Annule la notif ; le hub coupera via hangup si déjà ringing.
+          unawaited(cancelIncomingCallNotification());
+          return;
+        }
+        // "accept" ou tap corps → ouvrir l'écran d'appel.
+        _dispatchTap(payload);
       },
     );
 
@@ -186,8 +194,22 @@ class NotificationService {
     var granted = false;
 
     if (_isAndroid) {
-      final status = await Permission.notification.request();
-      granted = status.isGranted || status.isLimited;
+      try {
+        final statuses = await [
+          Permission.notification,
+          Permission.microphone,
+          Permission.camera,
+          Permission.bluetoothConnect,
+          Permission.ignoreBatteryOptimizations,
+          Permission.scheduleExactAlarm,
+          Permission.systemAlertWindow,
+        ].request();
+        final notif = statuses[Permission.notification];
+        granted = notif?.isGranted == true || notif?.isLimited == true;
+      } catch (_) {
+        final status = await Permission.notification.request();
+        granted = status.isGranted || status.isLimited;
+      }
       try {
         final android = _plugin.resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>();
@@ -371,10 +393,11 @@ class NotificationService {
         : "Appel audio entrant";
     const id = 900001;
     final playSound = AlertPrefs.instance.soundsEnabled;
+    final name = callerName.trim().isEmpty ? "Klambo" : callerName.trim();
 
     await _plugin.show(
       id: id,
-      title: callerName,
+      title: name,
       body: label,
       notificationDetails: NotificationDetails(
         android: AndroidNotificationDetails(
@@ -388,12 +411,26 @@ class NotificationService {
           ongoing: true,
           autoCancel: false,
           playSound: playSound,
-          // Sonnerie / notif par défaut du téléphone (pas de raw custom).
           enableVibration: true,
-          ticker: "$callerName — $label",
+          ticker: "$name — $label",
           visibility: NotificationVisibility.public,
           channelShowBadge: true,
+          timeoutAfter: null,
           audioAttributesUsage: AudioAttributesUsage.notificationRingtone,
+          actions: const <AndroidNotificationAction>[
+            AndroidNotificationAction(
+              "decline",
+              "Refuser",
+              cancelNotification: true,
+              showsUserInterface: false,
+            ),
+            AndroidNotificationAction(
+              "accept",
+              "Décrocher",
+              cancelNotification: true,
+              showsUserInterface: true,
+            ),
+          ],
         ),
         iOS: DarwinNotificationDetails(
           presentAlert: true,
@@ -402,7 +439,7 @@ class NotificationService {
           interruptionLevel: InterruptionLevel.timeSensitive,
         ),
       ),
-      payload: "call|${callId ?? ""}",
+      payload: "call|${callId ?? ""}|$kind",
     );
   }
 

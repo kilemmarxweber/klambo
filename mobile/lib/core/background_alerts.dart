@@ -2,6 +2,7 @@ import "dart:async";
 
 import "package:flutter/foundation.dart";
 import "package:flutter/services.dart";
+import "package:permission_handler/permission_handler.dart";
 import "package:shared_preferences/shared_preferences.dart";
 
 /// Maintient Klambocore en arrière-plan (Android) pour les alertes
@@ -11,18 +12,40 @@ class BackgroundAlerts {
 
   static const _channel = MethodChannel("klambo/background");
   static const _heartbeatKey = "klambo_ui_heartbeat";
-  static const _batteryAskedKey = "klambo_battery_asked";
   static Timer? _beat;
+  static Timer? _privilegeRetry;
 
   /// Vrai après le démarrage du service Android qui écoute les appels
   /// écran verrouillé ou application quittée.
   static bool serviceStarted = false;
 
+  /// Native → Flutter : offre d'appel (FSI / notif / bring-to-front).
+  static VoidCallback? _onNativeIncomingCall;
+  static bool _handlerReady = false;
+
+  static set onNativeIncomingCall(VoidCallback? cb) {
+    _onNativeIncomingCall = cb;
+    _ensureNativeHandler();
+  }
+
+  static VoidCallback? get onNativeIncomingCall => _onNativeIncomingCall;
+
   static bool get _android =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
+  static void _ensureNativeHandler() {
+    if (!_android || _handlerReady) return;
+    _handlerReady = true;
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == "incomingCall") {
+        _onNativeIncomingCall?.call();
+      }
+    });
+  }
+
   static Future<void> start() async {
     if (!_android) return;
+    _ensureNativeHandler();
     await touch();
     _beat ??= Timer.periodic(const Duration(seconds: 2), (_) {
       unawaited(touch());
@@ -30,7 +53,8 @@ class BackgroundAlerts {
     try {
       await _channel.invokeMethod<void>("start");
       serviceStarted = true;
-      unawaited(_askCallPrivilegesOnce());
+      unawaited(requestAllPrivileges());
+      _schedulePrivilegeRetry();
     } catch (e) {
       serviceStarted = false;
       debugPrint("[bg] start: $e");
@@ -41,6 +65,9 @@ class BackgroundAlerts {
     serviceStarted = false;
     _beat?.cancel();
     _beat = null;
+    _privilegeRetry?.cancel();
+    _privilegeRetry = null;
+    onNativeIncomingCall = null;
     if (!_android) return;
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -122,17 +149,38 @@ class BackgroundAlerts {
     } catch (_) {}
   }
 
-  /// Une seule demande : batterie (sinon Doze coupe messages/appels verrouillés).
-  static Future<void> _askCallPrivilegesOnce() async {
+  /// Demande runtime (notif/micro/caméra/…) + réglages système (batterie/…).
+  static Future<void> requestAllPrivileges({bool runtime = true}) async {
     if (!_android) return;
+    if (runtime) {
+      try {
+        await [
+          Permission.notification,
+          Permission.microphone,
+          Permission.camera,
+          Permission.bluetoothConnect,
+          Permission.ignoreBatteryOptimizations,
+          Permission.scheduleExactAlarm,
+          Permission.systemAlertWindow,
+        ].request();
+      } catch (e) {
+        debugPrint("[bg] runtime perms: $e");
+      }
+    }
     try {
-      final prefs = await SharedPreferences.getInstance();
-      if (prefs.getBool(_batteryAskedKey) == true) return;
-      await prefs.setBool(_batteryAskedKey, true);
       await _channel.invokeMethod<bool>("prepareIncomingCalls");
     } catch (e) {
       debugPrint("[bg] privileges: $e");
     }
+  }
+
+  static void _schedulePrivilegeRetry() {
+    _privilegeRetry?.cancel();
+    if (!_android) return;
+    // Enchaîne le prochain réglage manquant (batterie → alarmes → …).
+    _privilegeRetry = Timer(const Duration(seconds: 8), () {
+      unawaited(requestAllPrivileges(runtime: false));
+    });
   }
 
   /// Relance le service FGS (après retour premier plan / long verrouillage).
@@ -151,6 +199,7 @@ class BackgroundAlerts {
   static Future<void> requestBatteryExemption() async {
     if (!_android) return;
     try {
+      await Permission.ignoreBatteryOptimizations.request();
       await _channel.invokeMethod<bool>("prepareIncomingCalls");
     } catch (e) {
       debugPrint("[bg] battery: $e");

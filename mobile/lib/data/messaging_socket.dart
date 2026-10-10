@@ -98,6 +98,10 @@ class MessagingSocket {
           }
           if (type.startsWith("call.")) {
             onCallEvent?.call(map);
+            // Relaye aussi call.offer vers le hub (notif + ouverture UI).
+            if (type == "call.offer") {
+              onMessageEvent?.call(map);
+            }
             return;
           }
           if (type == "message.created" ||

@@ -5,22 +5,31 @@ import android.content.Context
 import android.content.Intent
 import androidx.core.content.ContextCompat
 
-/** Relance l'écoute des messages après un redémarrage du téléphone. */
+/** Relance l'écoute des messages après un redémarrage / mise à jour. */
 class AlertBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED &&
-            intent.action != Intent.ACTION_USER_UNLOCKED &&
-            intent.action != Intent.ACTION_MY_PACKAGE_REPLACED
-        ) {
-            return
-        }
-        val token = context
-            .getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-            .getString("flutter.klambo_auth_token", null)
+        val action = intent.action ?: return
+        val bootActions = setOf(
+            Intent.ACTION_BOOT_COMPLETED,
+            Intent.ACTION_LOCKED_BOOT_COMPLETED,
+            Intent.ACTION_USER_UNLOCKED,
+            Intent.ACTION_MY_PACKAGE_REPLACED,
+            "android.intent.action.QUICKBOOT_POWERON",
+            "com.htc.intent.action.QUICKBOOT_POWERON",
+        )
+        if (action !in bootActions) return
+        val prefs = context.getSharedPreferences(
+            "FlutterSharedPreferences",
+            Context.MODE_PRIVATE,
+        )
+        val token = prefs.getString("flutter.klambo_auth_token", null)
         if (token.isNullOrBlank()) return
+        val wanted = prefs.getBoolean("flutter.klambo_bg_wanted", true)
+        if (!wanted) return
         ContextCompat.startForegroundService(
             context,
-            Intent(context, AlertConnectionService::class.java),
+            Intent(context, AlertConnectionService::class.java)
+                .setAction(AlertConnectionService.ACTION_START),
         )
     }
 }

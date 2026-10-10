@@ -1,5 +1,6 @@
 package com.klambocore.klambo
 
+import android.app.AlarmManager
 import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
@@ -27,9 +28,11 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -48,11 +51,12 @@ import kotlin.math.min
  */
 class AlertConnectionService : Service() {
     private val client = OkHttpClient.Builder()
-        .pingInterval(15, TimeUnit.SECONDS)
+        .pingInterval(12, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
     private var socket: WebSocket? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private var callAudioHeld = false
     private var previousAudioMode = AudioManager.MODE_NORMAL
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -74,19 +78,31 @@ class AlertConnectionService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        stopped = false
-        AppVisibility.serviceRunning = true
         ensureChannels()
-        val ongoing = ongoingNotification()
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(
-                ONGOING_ID,
-                ongoing,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING,
-            )
-        } else {
-            startForeground(ONGOING_ID, ongoing)
+        if (intent?.action == ACTION_STOP) {
+            markWanted(false)
+            cancelKeepAliveAlarm()
+            stopped = true
+            AppVisibility.serviceRunning = false
+            // Si démarré via startForegroundService, Android exige une notif FGS.
+            try {
+                startMessagingForeground(ongoingNotification())
+            } catch (_: Exception) {
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+            stopSelf()
+            return START_NOT_STICKY
         }
+        stopped = false
+        markWanted(true)
+        AppVisibility.serviceRunning = true
+        val ongoing = ongoingNotification()
+        startMessagingForeground(ongoing)
         when (intent?.action) {
             ACTION_STOP_RING -> {
                 stopRing()
@@ -122,18 +138,15 @@ class AlertConnectionService : Service() {
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
-        if (!stopped) {
-            val restart = Intent(applicationContext, AlertConnectionService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                applicationContext.startForegroundService(restart)
-            } else {
-                applicationContext.startService(restart)
-            }
+        if (isWanted()) {
+            scheduleKeepAliveAlarm(delayMs = 1_500L)
+            restartServiceSoon()
         }
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
+        val wantRestart = isWanted()
         stopped = true
         AppVisibility.serviceRunning = false
         reconnect?.let { mainHandler.removeCallbacks(it) }
@@ -147,9 +160,30 @@ class AlertConnectionService : Service() {
         socket?.close(1000, "stop")
         socket = null
         releaseCallAudio()
+        releaseWifiLock()
         wakeLock?.let { if (it.isHeld) it.release() }
         wakeLock = null
+        if (wantRestart) {
+            scheduleKeepAliveAlarm(delayMs = 2_000L)
+            restartServiceSoon()
+        } else {
+            cancelKeepAliveAlarm()
+        }
         super.onDestroy()
+    }
+
+    private fun restartServiceSoon() {
+        try {
+            val restart = Intent(applicationContext, AlertConnectionService::class.java)
+                .setAction(ACTION_START)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                applicationContext.startForegroundService(restart)
+            } else {
+                applicationContext.startService(restart)
+            }
+        } catch (error: Exception) {
+            android.util.Log.w("klambo", "restart service", error)
+        }
     }
 
     /** Micro et CPU restent actifs écran verrouillé, le temps de l'appel. */
@@ -200,11 +234,28 @@ class AlertConnectionService : Service() {
 
     private fun startKeepAlive() {
         acquireWakeLock()
+        acquireWifiLock()
         scheduleWakeRenew()
         scheduleWatchdog()
         schedulePresenceHeartbeat()
         postPresenceHeartbeat()
+        scheduleKeepAliveAlarm()
         registerNetworkCallback()
+    }
+
+    private fun markWanted(value: Boolean) {
+        try {
+            prefs().edit().putBoolean(BG_WANTED_KEY, value).apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun isWanted(): Boolean {
+        return try {
+            prefs().getBoolean(BG_WANTED_KEY, true)
+        } catch (_: Exception) {
+            true
+        }
     }
 
     private fun acquireWakeLock() {
@@ -223,12 +274,77 @@ class AlertConnectionService : Service() {
         }
     }
 
+    private fun acquireWifiLock() {
+        try {
+            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                ?: return
+            if (wifiLock?.isHeld == true) return
+            @Suppress("DEPRECATION")
+            wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "klambo:wifi").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (error: Exception) {
+            android.util.Log.w("klambo", "wifi lock", error)
+        }
+    }
+
+    private fun releaseWifiLock() {
+        try {
+            wifiLock?.let { if (it.isHeld) it.release() }
+        } catch (_: Exception) {
+        }
+        wifiLock = null
+    }
+
+    private fun keepAlivePendingIntent(): PendingIntent {
+        val intent = Intent(this, AlertConnectionService::class.java).setAction(ACTION_START)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PendingIntent.getForegroundService(this, KEEP_ALIVE_REQ, intent, flags)
+        } else {
+            PendingIntent.getService(this, KEEP_ALIVE_REQ, intent, flags)
+        }
+    }
+
+    /** Relance le service sous Doze si l'OEM le tue. */
+    private fun scheduleKeepAliveAlarm(delayMs: Long = KEEP_ALIVE_ALARM_MS) {
+        if (!isWanted()) return
+        val am = getSystemService(AlarmManager::class.java) ?: return
+        val trigger = SystemClock.elapsedRealtime() + delayMs
+        val pi = keepAlivePendingIntent()
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, trigger, pi)
+            } else {
+                @Suppress("DEPRECATION")
+                am.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, trigger, pi)
+            }
+        } catch (_: SecurityException) {
+            try {
+                am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, trigger, pi)
+            } catch (_: Exception) {
+            }
+        } catch (error: Exception) {
+            android.util.Log.w("klambo", "keep-alive alarm", error)
+        }
+    }
+
+    private fun cancelKeepAliveAlarm() {
+        try {
+            getSystemService(AlarmManager::class.java)?.cancel(keepAlivePendingIntent())
+        } catch (_: Exception) {
+        }
+    }
+
     private fun scheduleWakeRenew() {
         wakeRenew?.let { mainHandler.removeCallbacks(it) }
         if (stopped) return
         val task = Runnable {
             if (stopped) return@Runnable
             acquireWakeLock()
+            acquireWifiLock()
+            scheduleKeepAliveAlarm()
             try {
                 // Rafraîchit la notif FGS : certains OEM tuent les services « silencieux ».
                 if (!callAudioHeld) {
@@ -240,7 +356,7 @@ class AlertConnectionService : Service() {
             scheduleWakeRenew()
         }
         wakeRenew = task
-        mainHandler.postDelayed(task, 25 * 60 * 1000L)
+        mainHandler.postDelayed(task, 8 * 60 * 1000L)
     }
 
     private fun scheduleWatchdog() {
@@ -248,14 +364,20 @@ class AlertConnectionService : Service() {
         if (stopped) return
         val task = Runnable {
             if (stopped) return@Runnable
+            acquireWakeLock()
             if (socket == null) {
                 android.util.Log.i("klambo", "watchdog: WS mort → reconnect")
                 connect()
+            } else {
+                try {
+                    socket?.send("""{"type":"ping"}""")
+                } catch (_: Exception) {
+                }
             }
             scheduleWatchdog()
         }
         watchdog = task
-        mainHandler.postDelayed(task, 20_000L)
+        mainHandler.postDelayed(task, 12_000L)
     }
 
     private fun registerNetworkCallback() {
@@ -377,13 +499,26 @@ class AlertConnectionService : Service() {
             stopIncoming()
             return
         }
-        // L'écran ouvert gère lui-même messages et appels.
-        // Écran verrouillé : toujours la page d'appel, même si Flutter est encore là.
-        if (AppVisibility.inForeground && flutterStillAlive() && !screenLocked()) return
-        when {
-            type == "message.created" -> showMessage(event, me)
-            type == "call.offer" && event.optString("toUserId") == me -> showCall(event)
+        // Appel entrant : toujours notif + ouverture app si écran verrouillé / app en fond.
+        if (type == "call.offer" && isIncomingOfferForMe(event, me)) {
+            val flutterHandles =
+                AppVisibility.inForeground && flutterStillAlive() && !screenLocked()
+            if (!flutterHandles) {
+                showCall(event)
+            }
+            return
         }
+        // Messages : Flutter au premier plan gère seul.
+        if (AppVisibility.inForeground && flutterStillAlive() && !screenLocked()) return
+        if (type == "message.created") showMessage(event, me)
+    }
+
+    private fun isIncomingOfferForMe(event: JSONObject, me: String?): Boolean {
+        val from = event.optString("fromUserId")
+        if (me != null && from == me) return false
+        val to = event.optString("toUserId")
+        if (to.isBlank() || to == "null") return true
+        return me != null && to == me
     }
 
     private fun screenLocked(): Boolean {
@@ -724,9 +859,12 @@ class AlertConnectionService : Service() {
 
     private fun incomingIntent(raw: String, accept: Boolean): Intent {
         return Intent(this, MainActivity::class.java).apply {
+            action = Intent.ACTION_VIEW
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or
                 Intent.FLAG_ACTIVITY_SINGLE_TOP or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                Intent.FLAG_ACTIVITY_INCLUDE_STOPPED_PACKAGES
             putExtra(EXTRA_CALL, raw)
             putExtra(EXTRA_ACCEPT, accept)
         }
@@ -735,11 +873,9 @@ class AlertConnectionService : Service() {
     private fun startMessagingForeground(notification: Notification) {
         releaseCallAudio()
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(
-                ONGOING_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING,
-            )
+            val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING or
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            startForeground(ONGOING_ID, notification, types)
         } else {
             startForeground(ONGOING_ID, notification)
         }
@@ -753,7 +889,9 @@ class AlertConnectionService : Service() {
                 types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
             }
             if (Build.VERSION.SDK_INT >= 34) {
-                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING
+                types = types or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
             }
             startForeground(ONGOING_ID, notification, types)
         } else {
@@ -788,7 +926,8 @@ class AlertConnectionService : Service() {
     private fun bringCallToFront(raw: String) {
         try {
             startActivity(incomingIntent(raw, accept = false))
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            android.util.Log.w("klambo", "bringCallToFront", error)
         }
     }
 
@@ -973,7 +1112,7 @@ class AlertConnectionService : Service() {
             schedulePresenceHeartbeat()
         }
         presenceBeat = task
-        mainHandler.postDelayed(task, 25_000L)
+        mainHandler.postDelayed(task, 15_000L)
     }
 
     private fun postPresenceHeartbeat() {
@@ -1103,6 +1242,11 @@ class AlertConnectionService : Service() {
     companion object {
         private const val ONGOING_ID = 42
         private const val MESSAGE_CHANNEL = "klambo_messages_bg_v2"
+        private const val KEEP_ALIVE_REQ = 77
+        private const val KEEP_ALIVE_ALARM_MS = 3 * 60 * 1000L
+        private const val BG_WANTED_KEY = "flutter.klambo_bg_wanted"
+        const val ACTION_START = "com.klambocore.klambo.START_ALERTS"
+        const val ACTION_STOP = "com.klambocore.klambo.STOP_ALERTS"
         const val ACTION_STOP_RING = "com.klambocore.klambo.STOP_RING"
         const val ACTION_DECLINE = "com.klambocore.klambo.DECLINE_CALL"
         const val ACTION_ONGOING = "com.klambocore.klambo.CALL_ONGOING"

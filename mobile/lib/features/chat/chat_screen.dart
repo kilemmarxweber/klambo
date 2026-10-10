@@ -465,13 +465,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final messageIds = _eventMessageIds(event, update);
       final eventStatus = _eventDeliveryStatus(event, update);
       if (reason == "delivered" || reason == "received") {
-        if (messageIds.isEmpty) {
-          // delivered/received sans ids → tous mes SENT (B actif a ack).
-          _markMineDelivered();
-        } else {
-          for (final messageId in messageIds) {
-            _setMessageDeliveryStatus(messageId, "DELIVERED");
-          }
+        for (final messageId in messageIds) {
+          _setMessageDeliveryStatus(messageId, "DELIVERED");
         }
       }
       if (reason == "read" &&
@@ -523,17 +518,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         type == "message.read") {
       if (convId != null && convId != widget.conversationId) return;
       final messageIds = _eventMessageIds(event, payload);
-      if (type == "message.read") {
-        for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
-          _setMessageDeliveryStatus(messageId, "READ");
-        }
-      } else if (messageIds.isEmpty) {
-        // delivered/received sans ids → tous mes SENT (B actif a ack).
-        _markMineDelivered();
-      } else {
-        for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
-          _setMessageDeliveryStatus(messageId, "DELIVERED");
-        }
+      for (final messageId in messageIds.where((id) => id.isNotEmpty)) {
+        _setMessageDeliveryStatus(
+          messageId,
+          type == "message.read" ? "READ" : "DELIVERED",
+        );
       }
       return;
     }
@@ -564,9 +553,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           final body = event["body"]?.toString() ??
               event["bodyPreview"]?.toString() ??
               "";
-          // Pas de refresh HTTP pour une bulle d'appel : évite le doublon
-          // calltrace-* + message serveur.
-          if (CallTraceInfo.tryParse(body) == null) {
+          // Pas de refresh HTTP pour une bulle d'appel (évite calltrace-* + serveur).
+          if (CallTraceInfo.tryParse(body) == null &&
+              !body.trim().startsWith(CallTraceInfo.bodyPrefix)) {
             _threadRefresh?.cancel();
             _threadRefresh = Timer(const Duration(seconds: 4), () {
               if (mounted) unawaited(_load(silent: true));
@@ -583,21 +572,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _setMessageDeliveryStatus(String messageId, String status) {
-    if (!mounted || messageId.isEmpty) return;
+    if (!mounted) return;
     final normalizedStatus = status.trim().toUpperCase();
-    final index = _messages.indexWhere((raw) {
-      if (raw is! Map) return false;
-      if (raw["id"]?.toString() == messageId) return true;
-      // Filet : ack peut arriver avec clientMessageId.
-      return raw["clientMessageId"]?.toString() == messageId;
-    });
+    final index = _messages.indexWhere(
+      (raw) => raw is Map && raw["id"]?.toString() == messageId,
+    );
     if (index < 0) return;
     final raw = _messages[index];
     if (raw is! Map) return;
     final current = raw["deliveryStatus"]?.toString().trim().toUpperCase();
     final currentRank = _deliveryStatusRank(current);
     final nextRank = _deliveryStatusRank(normalizedStatus);
-    if (nextRank <= 0) return;
     if (currentRank >= nextRank && currentRank > 0) return;
     setState(() {
       final updated = Map<String, dynamic>.from(raw);
@@ -606,49 +591,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     });
   }
 
-  /// delivered/received sans ids → tous mes SENT deviennent DELIVERED.
-  void _markMineDelivered() {
-    if (!mounted) return;
-    final me = ref.read(sessionProvider).me?["user"];
-    final myId = me is Map ? me["id"]?.toString() : null;
-    if (myId == null) return;
-    var changed = false;
-    final next = <dynamic>[];
-    for (final raw in _messages) {
-      if (raw is! Map) {
-        next.add(raw);
-        continue;
-      }
-      if (raw["senderId"]?.toString() != myId || raw["pending"] == true) {
-        next.add(raw);
-        continue;
-      }
-      final rank = _deliveryStatusRank(raw["deliveryStatus"]);
-      if (rank >= 2) {
-        next.add(raw);
-        continue;
-      }
-      final updated = Map<String, dynamic>.from(raw);
-      updated["deliveryStatus"] = "DELIVERED";
-      next.add(updated);
-      changed = true;
-    }
-    if (changed) setState(() => _messages = next);
-  }
-
   Set<String> _eventMessageIds(Object? primary, [Object? secondary]) {
     final ids = <String>{};
     for (final source in [primary, secondary]) {
       if (source is! Map) continue;
       final many = source["messageIds"] ?? source["message_ids"];
       if (many is List) ids.addAll(many.map((id) => id.toString()));
-      for (final key in [
-        "messageId",
-        "message_id",
-        "id",
-        "clientMessageId",
-        "client_message_id",
-      ]) {
+      for (final key in ["messageId", "message_id", "id"]) {
         final value = source[key]?.toString();
         if (value != null && value.isNotEmpty) ids.add(value);
       }
@@ -697,34 +646,39 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         (payload is Map ? payload["bodyPreview"]?.toString() : null) ??
         "";
     final callTrace = CallTraceInfo.tryParse(body);
-    if (callTrace != null) {
-      final callId = callTrace.callId?.trim() ?? "";
+    if (callTrace != null || body.trim().startsWith(CallTraceInfo.bodyPrefix)) {
+      final callId = callTrace?.callId?.trim() ?? "";
       final syntheticId = callId.isNotEmpty ? "calltrace-$callId" : "";
+      if (syntheticId.isNotEmpty && _knownMessageIds.contains(syntheticId)) {
+        _knownMessageIds.add(id);
+        return true;
+      }
       for (var i = 0; i < _messages.length; i++) {
         final m = _messages[i];
         if (m is! Map) continue;
         final mid = m["id"]?.toString() ?? "";
         final existing = CallTraceInfo.tryParse(m["body"]?.toString());
         final sameCall = (callId.isNotEmpty &&
-                (existing?.callId == callId || mid == syntheticId)) ||
+                (existing?.callId == callId ||
+                    mid == syntheticId ||
+                    mid == callId)) ||
             (callId.isEmpty &&
                 existing != null &&
-                existing.kind == callTrace.kind &&
-                existing.status == callTrace.status &&
+                existing.kind == callTrace?.kind &&
+                existing.status == callTrace?.status &&
                 _callTracesCloseInTime(m, event));
         if (!sameCall) continue;
         _knownMessageIds.add(id);
-        // Remplacer la bulle locale synthétique par le message serveur.
+        if (syntheticId.isNotEmpty) _knownMessageIds.add(syntheticId);
+        // Remplacer la bulle locale synthétique par l'id serveur si besoin.
         if (mid.startsWith("calltrace-") && !id.startsWith("calltrace-")) {
           setState(() {
             final updated = Map<String, dynamic>.from(m);
             updated["id"] = id;
-            updated["body"] = body;
-            if (senderId != null) updated["senderId"] = senderId;
-            final name = event["senderName"]?.toString();
-            if (name != null && name.isNotEmpty) {
-              updated["senderName"] = name;
+            if (body.trim().startsWith(CallTraceInfo.bodyPrefix)) {
+              updated["body"] = body;
             }
+            if (senderId != null) updated["senderId"] = senderId;
             _messages[i] = updated;
           });
         }
@@ -764,6 +718,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         });
       }
       _knownMessageIds.add(id);
+      final cid = CallTraceInfo.tryParse(body)?.callId?.trim();
+      if (cid != null && cid.isNotEmpty) {
+        _knownMessageIds.add(cid);
+        _knownMessageIds.add("calltrace-$cid");
+      }
       _keepComposerFocus(wasFocused: keepFocus);
       return true;
     }
@@ -785,6 +744,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       ];
     });
     _knownMessageIds.add(id);
+    final cid = CallTraceInfo.tryParse(body)?.callId?.trim();
+    if (cid != null && cid.isNotEmpty) {
+      _knownMessageIds.add(cid);
+      _knownMessageIds.add("calltrace-$cid");
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _scrollToBottom(force: true, animated: true);
     });
@@ -897,11 +861,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         );
         if (oldStatus > newStatus) {
           final merged = Map<String, dynamic>.from(incomingMessage);
-          // Préserver le statut local (SENT/DELIVERED/READ), pas upgrader SENT→DELIVERED.
-          final localStatus = m["deliveryStatus"]?.toString().trim().toUpperCase();
-          merged["deliveryStatus"] = (localStatus != null && localStatus.isNotEmpty)
-              ? localStatus
-              : _deliveryStatusLabel(oldStatus);
+          merged["deliveryStatus"] = oldStatus >= 3 ? "READ" : "DELIVERED";
           byId[id] = merged;
         }
       }
@@ -917,7 +877,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     return _dedupeCallTraces(list);
   }
 
-  /// Une seule bulle `__CALL__` par callId (local calltrace-* + serveur).
+  /// Une seule bulle `__CALL__` par callId (local calltrace-* + éventuel serveur).
   List<Map<String, dynamic>> _dedupeCallTraces(
     List<Map<String, dynamic>> list,
   ) {
@@ -926,7 +886,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final drop = <int>{};
     for (var i = 0; i < list.length; i++) {
       final trace = CallTraceInfo.tryParse(list[i]["body"]?.toString());
-      final callId = trace?.callId?.trim() ?? "";
+      var callId = trace?.callId?.trim() ?? "";
+      final mid = list[i]["id"]?.toString() ?? "";
+      if (callId.isEmpty && mid.startsWith("calltrace-")) {
+        callId = mid.substring("calltrace-".length);
+      }
       if (callId.isEmpty) continue;
       final prev = bestByCallId[callId];
       if (prev == null) {
@@ -934,17 +898,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         continue;
       }
       final prevId = list[prev]["id"]?.toString() ?? "";
-      final curId = list[i]["id"]?.toString() ?? "";
+      final curId = mid;
       final prevSynthetic = prevId.startsWith("calltrace-");
       final curSynthetic = curId.startsWith("calltrace-");
-      // Garder le message serveur ; sinon le plus récent.
       if (prevSynthetic && !curSynthetic) {
         drop.add(prev);
         bestByCallId[callId] = i;
       } else if (!prevSynthetic && curSynthetic) {
         drop.add(i);
       } else {
-        final prevAt = DateTime.tryParse(list[prev]["createdAt"]?.toString() ?? "");
+        final prevAt =
+            DateTime.tryParse(list[prev]["createdAt"]?.toString() ?? "");
         final curAt = DateTime.tryParse(list[i]["createdAt"]?.toString() ?? "");
         if (curAt != null && (prevAt == null || curAt.isAfter(prevAt))) {
           drop.add(prev);
@@ -983,13 +947,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       default:
         return 0;
     }
-  }
-
-  String _deliveryStatusLabel(int rank) {
-    if (rank >= 3) return "READ";
-    if (rank >= 2) return "DELIVERED";
-    if (rank >= 1) return "SENT";
-    return "SENT";
   }
 
   @override

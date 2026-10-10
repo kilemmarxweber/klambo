@@ -105,6 +105,8 @@ class _KlamboMessagerieAppState extends ConsumerState<KlamboMessagerieApp>
     if (state == AppLifecycleState.resumed) {
       unawaited(BackgroundAlerts.touch());
       unawaited(BackgroundAlerts.ensureAlive());
+      // Revalide les réglages système encore manquants (sans re-popup micro/caméra).
+      unawaited(BackgroundAlerts.requestAllPrivileges(runtime: false));
       if (hub != null) {
         unawaited(hub.consumeNativeCall());
         if (!hub.socket.isConnected) {
@@ -158,16 +160,12 @@ class RootGate extends ConsumerStatefulWidget {
 class _RootGateState extends ConsumerState<RootGate> {
   bool _alertsArmed = false;
 
-  /// Active le son système dès l'ouverture, sans écran de réglages.
-  /// Android 13+ affiche une seule fois la demande système des notifications.
+  /// Active écoute arrière-plan + toutes les autorisations utiles dès l'accueil.
   Future<void> _armAlerts() async {
     if (kIsWeb) return;
-    final allowed =
-        await NotificationService.instance.areNotificationsAllowed();
-    if (!allowed) {
-      await NotificationService.instance.requestPermissions();
-    }
+    await NotificationService.instance.requestPermissions();
     await BackgroundAlerts.start();
+    await BackgroundAlerts.requestAllPrivileges();
   }
 
   @override
